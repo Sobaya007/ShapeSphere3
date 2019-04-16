@@ -1,0 +1,10 @@
+name "shapesphere3"
+description "A minimal D application."
+authors "sobaya"
+copyright "Copyright © 2019, sobaya"
+license "proprietary"
+
+targetPath "bin"
+
+dependency "sbylib-editor" version="*"
+dependency "sbylib-collision" version="*"
