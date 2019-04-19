@@ -25,7 +25,10 @@ void entryPoint(Project proj, EventContext context) {
 
             auto floor = proj.get!Floor("floor");
             sphere.step(floor);
-            camera.capture(sphere);
+
+            with (canvas.getContext()) {
+                camera.capture(sphere);
+            }
         });
 
         float pushCount = 0;
@@ -94,12 +97,16 @@ class ElasticSphere : Entity, CollisionCapsule {
         import std.array : array;
 
         this.geom = GeometryLibrary().buildIcosahedron(RecursionLevel).transform(mat3.scale(vec3(DefaultRadius)));
+        this.geom.primitive = Primitive.Patch;
         this.geometry = geom;
 
         this.force = vec3(0);
         this.particleList = geom.attributeList.map!(a => new Particle(a.position.xyz)).array;
 
         this.pairList = createPairList(this.geom, this.particleList);
+
+        this.innerLevel = 3;
+        this.outerLevel = 3;
     }
 
     private auto createPairList(Geometry geom, Particle[] particleList) {
@@ -133,7 +140,7 @@ class ElasticSphere : Entity, CollisionCapsule {
     }
 
     void step(Floor floor) {
-        import std.algorithm : map, minElement;
+        import std.algorithm : map, maxElement;
 
         vec3 g = this.center;
 
@@ -152,9 +159,9 @@ class ElasticSphere : Entity, CollisionCapsule {
         const baloonForce = this.calcBaloonForce(g);
         this.contactNormal.nullify();
 
-        this._radius = this.particleList.map!(p => length(p.position - g)).minElement;
+        this._radius = this.particleList.map!(p => length(p.position - g)).maxElement;
         
-        auto colInfo = detect(floor, this);
+        const colInfo = detect(floor, this);
 
         /*
         with (Log()) {
@@ -171,7 +178,7 @@ class ElasticSphere : Entity, CollisionCapsule {
             particle.velocity += particle.force * ForceCoef;
             move(particle);
             if (colInfo.isNull is false)
-                collision(particle, colInfo.pushVector(this));
+                collision(particle, floor);
             end(particle);
         }
         this.force.y = 0;
@@ -189,7 +196,7 @@ class ElasticSphere : Entity, CollisionCapsule {
 
         auto force = forceVector.length;
         auto n = forceVector / force;
-        vec3 g = center;
+        const g = center;
         const minv = calcMin(-n);
         const maxv = calcMax(-n);
 
@@ -198,7 +205,7 @@ class ElasticSphere : Entity, CollisionCapsule {
             auto v = p.position - g;
             v -= dot(v, n) * n;
             auto len = v.length;
-            auto t = (p.position.dot(-n) - minv) / (maxv - minv);
+            const t = (p.position.dot(-n) - minv) / (maxv - minv);
             float power = force / pow(len + 0.6, 2.5);
             power = min(maxPower, power);
             power *= t;
@@ -279,14 +286,19 @@ class ElasticSphere : Entity, CollisionCapsule {
             particle.velocity *= MaxVelocity / particle.velocity.length;
         }
         particle.position += particle.velocity * TimeStep;
-        //particle.capsule.end = particle.capsule.start;
-        //particle.capsule.start = particle.position;
+        particle._ends[1] = particle._ends[0];
+        particle._ends[0] = particle.position;
     }
 
-    private void collision(Particle particle, vec3 pushVector) {
+    private void collision(Particle particle, Floor floor) {
+        auto colInfo = detect(floor, particle);
+        if (colInfo.isNull) return;
+
+        const pushVector = colInfo.pushVector(particle);
         const depth = pushVector.length;
         const n = pushVector / depth;
-        if (depth < 0) return;
+        if (depth < 1e-5) return;
+
         const po = particle.velocity - dot(particle.velocity, n) * n;
         particle.velocity -= po * Friction;
         if (this.contactNormal.isNull) this.contactNormal = normalize(n);
@@ -301,8 +313,8 @@ class ElasticSphere : Entity, CollisionCapsule {
 
     private void end(Particle particle) {
         particle.force = vec3(0,0,0); //用済み
-        //particle.capsule.end = particle.capsule.start;
-        //particle.capsule.start = particle.position;
+        particle._ends[1] = particle._ends[0];
+        particle._ends[0] = particle.position;
     }
 
     private void updateGeometry() {
@@ -336,7 +348,7 @@ class ElasticSphere : Entity, CollisionCapsule {
         float minDist = length(particle.position - pos);
         while (true) {
             Particle newParticle = particle.next.minElement!(p => length(p.position - pos));
-            float dist = length(newParticle.position - pos);
+            const dist = length(newParticle.position - pos);
             if (dist < minDist) {
                 minDist = dist;
             } else {
@@ -361,11 +373,11 @@ class ElasticSphere : Entity, CollisionCapsule {
     private auto aVel() {
         import std.algorithm : map, sum;
 
-        auto c = center;
-        auto l = lVel;
+        const c = center;
+        const l = lVel;
         return this.particleList.map!((p) {
-            auto r = p.position - center;
-            auto v = p.velocity - lVel;
+            auto r = p.position - c;
+            auto v = p.velocity - l;
             return cross(r, v) / lengthSq(r);
         }).sum / this.particleList.length;
     }
@@ -397,11 +409,13 @@ class ElasticSphere : Entity, CollisionCapsule {
             this._ends = [p,p];
         }
 
+        /*
         void move() {
            this.force = vec3(0,0,0); //用済み
            this._ends[1] = this._ends[0];
            this._ends[0] = this.position;
         }
+        */
 
         override float radius() {
             return 0.1;
@@ -444,30 +458,116 @@ class ElasticSphere : Entity, CollisionCapsule {
 }
 
 class ElasticMaterial : Material {
-    mixin VertexShaderSource!q{
-        #version 450
+    mixin PatchVertices!(3);
 
+    mixin VertexShaderSource!(q{
+        #version 450
         in vec4 position;
         in vec3 normal;
-        out vec3 vnormal;
+        out vec3 normal2;
+
+        void main() {
+            gl_Position = position;
+            normal2 = normal;
+        }
+    });
+
+    mixin TessellationControlShaderSource!q{
+        #version 450
+        layout(vertices=3) out;
+        in vec3 normal2[];
+        out vec3 normal3[];
+        uniform int outerLevel;
+        uniform int innerLevel;
+
+        void main(){
+            gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
+            normal3[gl_InvocationID] = normal2[gl_InvocationID];
+            gl_TessLevelOuter[0] = outerLevel;
+            gl_TessLevelOuter[1] = outerLevel;
+            gl_TessLevelOuter[2] = outerLevel;
+            gl_TessLevelInner[0] = innerLevel;
+        }
+    };
+
+    mixin TessellationEvaluationShaderSource!q{
+        #version 450
+        layout(triangles) in;
+        in vec3 normal3[];
+        out vec3 vposition;
+        out vec3 normal4;
+
         uniform mat4 worldMatrix;
         uniform mat4 viewMatrix;
         uniform mat4 projectionMatrix;
-        
-        void main() {
-            gl_Position = projectionMatrix * viewMatrix * worldMatrix * position;
-            vnormal = normal;
+
+        void main(){
+            vec4 p = vec4(0);
+            vec3 n = vec3(0);
+            for (int i = 0; i < 3; i++) {
+                p += gl_TessCoord[i] * gl_in[i].gl_Position;
+                n += gl_TessCoord[i] * normal3[i];
+            }
+            p.xyz /= length(n);
+
+            gl_Position = projectionMatrix * viewMatrix * worldMatrix * p;
+            normal4 = (viewMatrix * worldMatrix * vec4(n, 0)).xyz;
+            vec4 pv = viewMatrix * worldMatrix * p;
+            vposition = pv.xyz / p.w;
         }
     };
 
-    mixin FragmentShaderSource!q{
+    mixin GeometryShaderSource!q{
         #version 450
-
-        in vec3 vnormal;
-        out vec4 fragColor;
+        layout(triangles) in;
+        layout(triangle_strip,max_vertices=4) out;
+        in vec3 vposition[];
+        in vec3 normal4[];
+        out vec3 pos;
+        out vec3 n;
         
-        void main() {
-            fragColor = vec4(normalize(vnormal) * .5 + .5, 1);
+        void main(){
+            for (int i = 0; i < 3; i++) {
+                gl_Position = gl_in[i].gl_Position;
+                pos = vposition[i];
+                n = normal4[i];
+                EmitVertex();
+            }
+        
+            EndPrimitive();
         }
     };
+
+    mixin FragmentShaderSource!(q{
+        #version 450
+        in vec3 pos;
+        in vec3 n;
+        out vec4 fragColor;
+
+        const vec3 lightPos = vec3(1,3,1);
+
+        // yawaraka orange
+        void main() {
+            vec3 nrm = normalize(n);
+            vec3 camV = normalize(pos);
+            vec3 col = vec3(1,0.5,0.1);
+            vec3 acc = vec3(0);
+        
+            vec3 ligC = vec3(3,3,5),ligV;
+            float fac,cus;
+            for(int i=0;i<1;i++){
+                ligV = normalize(lightPos-pos);
+                fac = pow(length(lightPos-pos),0.9);
+                cus = 0;
+                cus += max(0.,dot(-camV,nrm))/4.;
+                cus *= max(0.2,1.-pow(1.-abs(dot(-camV,nrm)),3.));
+                cus += max(0.,dot(ligV,nrm)*0.5+0.5)/6.;
+                cus += max(0.,dot(ligV,nrm))/6.;
+        
+                acc += cus*ligC*col*4.0/fac * 2.0;
+            }
+            fragColor.rgb = acc;
+            fragColor.a = length(pos) * length(pos) * 0.1;
+        }
+    });
 }
