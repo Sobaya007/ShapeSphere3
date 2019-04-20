@@ -48,11 +48,6 @@ void entryPoint(Project proj, EventContext context) {
 }
 
 class ElasticSphere : Entity, CollisionCapsule {
-    import std.typecons : Nullable;
-
-    mixin ImplPos;
-    mixin ImplRot;
-    mixin ImplWorldMatrix;
     mixin Material!(ElasticMaterial);
     mixin ImplUniform;
     mixin ImplAABB;
@@ -84,11 +79,14 @@ class ElasticSphere : Entity, CollisionCapsule {
         Particle[] particleList;
         Pair[] pairList;
         Geometry geom;
+        vec3 pos = vec3(0);
         vec3 beforePos = vec3(0);
         float _radius = 0;
     }
 
     public {
+        import std.typecons : Nullable;
+
         vec3 force;
         Nullable!vec3 contactNormal;
     }
@@ -477,7 +475,6 @@ class ElasticMaterial : Material {
         out vec3 vposition;
         out vec3 normal4;
 
-        uniform mat4 worldMatrix;
         uniform mat4 viewMatrix;
         uniform mat4 projectionMatrix;
 
@@ -491,7 +488,7 @@ class ElasticMaterial : Material {
             p.xyz /= length(n);
 
             gl_Position = projectionMatrix * viewMatrix * p;
-            normal4 = (viewMatrix * worldMatrix * vec4(n, 0)).xyz;
+            normal4 = (viewMatrix * vec4(n, 0)).xyz;
             vec4 pv = viewMatrix * p;
             vposition = pv.xyz / p.w;
         }
