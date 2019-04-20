@@ -140,9 +140,9 @@ class ElasticSphere : Entity, CollisionCapsule {
     }
 
     void step(Floor floor) {
-        import std.algorithm : map, maxElement;
+        import std.algorithm : map, maxElement, min;
 
-        vec3 g = this.center;
+        const g = this.center;
 
         this.rotateParticles(g);
         this.pos = g;
@@ -163,23 +163,21 @@ class ElasticSphere : Entity, CollisionCapsule {
         
         const colInfo = detect(floor, this);
 
-        /*
-        with (Log()) {
-            if (colInfo.isNull is false) {
-                writeln(colInfo.pushVector(this));
-                writeln(colInfo.type);
-            }
-        }
-        */
-
         foreach (ref particle; this.particleList) {
             particle.force += particle.normal * baloonForce;
             if (this.contactNormal.isNull) particle.force.y -= Gravity * Mass;
+
             particle.velocity += particle.force * ForceCoef;
-            move(particle);
+            particle.velocity = min(MaxVelocity, particle.velocity.length) * particle.velocity.safeNormalize;
+
+            particle.position += particle.velocity * TimeStep;
+            particle._ends[0] = particle.position;
+
             if (colInfo.isNull is false)
                 collision(particle, floor);
-            end(particle);
+
+            particle.force = vec3(0);
+            particle._ends[1] = particle.position;
         }
         this.force.y = 0;
         foreach (p; this.particleList) {
@@ -190,12 +188,12 @@ class ElasticSphere : Entity, CollisionCapsule {
         updateGeometry();
     }
 
-    void push(vec3 forceVector, float maxPower) {
+    void push(const vec3 forceVector, const float maxPower) {
         import std.algorithm : min;
         import std.math : pow;
 
-        auto force = forceVector.length;
-        auto n = forceVector / force;
+        const force = forceVector.length;
+        const n = forceVector / force;
         const g = center;
         const minv = calcMin(-n);
         const maxv = calcMax(-n);
@@ -204,9 +202,9 @@ class ElasticSphere : Entity, CollisionCapsule {
             //下向きの力
             auto v = p.position - g;
             v -= dot(v, n) * n;
-            auto len = v.length;
+            const len = v.length;
             const t = (p.position.dot(-n) - minv) / (maxv - minv);
-            float power = force / pow(len + 0.6, 2.5);
+            auto power = force / pow(len + 0.6, 2.5);
             power = min(maxPower, power);
             power *= t;
             p.force += power * n;
@@ -223,8 +221,8 @@ class ElasticSphere : Entity, CollisionCapsule {
         const len = axis.length;
         if (len.approxEqual(0)) return;
         axis /= len;
-        auto angle = rad(dif.length / radius);
-        quat rot = quat.axisAngle(axis, angle);
+        const angle = rad(dif.length / radius);
+        const rot = quat.axisAngle(axis, angle);
         foreach (p; this.particleList) {
             p.position = rot.rotate(p.position-center) + center;
             p.normal = rot.rotate(p.normal);
@@ -236,9 +234,9 @@ class ElasticSphere : Entity, CollisionCapsule {
 
         float volume = 0;
         foreach (i; 0..geom.indexList.length/3) {
-            auto a = this.particleList[geom.indexList[i*3+0]].position - center;
-            auto b = this.particleList[geom.indexList[i*3+1]].position - center;
-            auto c = this.particleList[geom.indexList[i*3+2]].position - center;
+            const a = this.particleList[geom.indexList[i*3+0]].position - center;
+            const b = this.particleList[geom.indexList[i*3+1]].position - center;
+            const c = this.particleList[geom.indexList[i*3+2]].position - center;
             volume += mat3(a,b,c).determinant;
         }
         return abs(volume) / 6;
@@ -281,15 +279,6 @@ class ElasticSphere : Entity, CollisionCapsule {
         return BaloonCoef * area / (volume * this.particleList.length);
     }
 
-    private void move(Particle particle) {
-        if (particle.velocity.length > MaxVelocity) {
-            particle.velocity *= MaxVelocity / particle.velocity.length;
-        }
-        particle.position += particle.velocity * TimeStep;
-        particle._ends[1] = particle._ends[0];
-        particle._ends[0] = particle.position;
-    }
-
     private void collision(Particle particle, Floor floor) {
         auto colInfo = detect(floor, particle);
         if (colInfo.isNull) return;
@@ -309,12 +298,12 @@ class ElasticSphere : Entity, CollisionCapsule {
         particle.position += n * depth;
         if (this.contactNormal.isNull is false)
             this.contactNormal = normalize(this.contactNormal);
-    }
 
-    private void end(Particle particle) {
-        particle.force = vec3(0,0,0); //用済み
-        particle._ends[1] = particle._ends[0];
-        particle._ends[0] = particle.position;
+        if (particle.position.y < -2) {
+            with (Log()) {
+                writeln(particle.position);
+            }
+        }
     }
 
     private void updateGeometry() {
@@ -335,8 +324,9 @@ class ElasticSphere : Entity, CollisionCapsule {
         }
         foreach (i,ref v; vs) {
             auto p = this.particleList[i];
+            v.position = vec4(p.position, 1);
             v.normal = safeNormalize(p.normal);
-            v.position.xyz = (this.worldMatrix.invert() * vec4(p.position, 1)).xyz; }
+        }
         geom.update();
     }
 
@@ -398,27 +388,21 @@ class ElasticSphere : Entity, CollisionCapsule {
         bool isStinger;
         Particle[] next;
         private vec3[2] _ends;
+        vec3 beforePos;
 
         mixin ImplAABB;
 
         this(vec3 p) {
             this.position = p;
+            this.beforePos = p;
             this.normal = normalize(p);
             this.velocity = vec3(0);
             this.force = vec3(0,0,0);
             this._ends = [p,p];
         }
 
-        /*
-        void move() {
-           this.force = vec3(0,0,0); //用済み
-           this._ends[1] = this._ends[0];
-           this._ends[0] = this.position;
-        }
-        */
-
         override float radius() {
-            return 0.1;
+            return 0.01;
         }
 
         override vec3[2] ends() {
@@ -510,9 +494,9 @@ class ElasticMaterial : Material {
             }
             p.xyz /= length(n);
 
-            gl_Position = projectionMatrix * viewMatrix * worldMatrix * p;
+            gl_Position = projectionMatrix * viewMatrix * p;
             normal4 = (viewMatrix * worldMatrix * vec4(n, 0)).xyz;
-            vec4 pv = viewMatrix * worldMatrix * p;
+            vec4 pv = viewMatrix * p;
             vposition = pv.xyz / p.w;
         }
     };
