@@ -13,6 +13,7 @@ void entryPoint(Project proj, EventContext context) {
     auto window = proj.get!Window("window");
     auto sphere = new ElasticSphere;
     proj["sphere"] = sphere;
+
     with (context()) {
         import std.datetime;
         import std.conv : to;
@@ -47,7 +48,6 @@ void entryPoint(Project proj, EventContext context) {
 }
 
 class ElasticSphere : Entity, CollisionCapsule {
-    import std.traits : ReturnType;
     import std.typecons : Nullable;
 
     mixin ImplPos;
@@ -58,33 +58,34 @@ class ElasticSphere : Entity, CollisionCapsule {
     mixin ImplAABB;
 
     private static immutable {
-        uint RecursionLevel = 2;
-        float DefaultRadius = 0.5;
-        float Radius = 2.0f;
-        float TimeStep = 0.02;
-        float Mass = 0.05;
-        float Friction = 0.3;
-        float Zeta = 0.5;
-        float Omega = 150;
-        float Gravity = 100;
-        float BaloonCoef = 20000;
-        float MaxVelocity = 40;
-        int IterationCount = 10;
+        uint RECURSION_LEVEL = 2;
+        float DEFAULT_RADIUS = 0.5;
+        float TIME_STEP = 0.02;
+        float MASS = 0.05;
+        float FRICTION = 0.3;
+        float ZETA = 0.5;
+        float OMEGA = 150;
+        float GRAVITY = 100;
+        float BALOON_COEF = 20_000;
+        float MAX_VELOCITY = 40;
+        int ITERATION_COUNT = 10;
 
-        float C = 2 * Zeta * Omega * Mass;
-        float K = Omega * Omega * Mass;
-        float VelCoef = 1 / (1 + TimeStep*C/Mass + TimeStep*TimeStep*K/Mass);
-        float PosCoef = - (TimeStep*K/Mass) / (1 + TimeStep*C/Mass + TimeStep*TimeStep*K/Mass);
-        float ForceCoef = (TimeStep/Mass) / (1 + TimeStep*C/Mass + TimeStep*TimeStep*K/Mass);
+        float C = 2 * ZETA * OMEGA * MASS;
+        float K = OMEGA * OMEGA * MASS;
+        float VEL_COEF = 1 / (1 + TIME_STEP*C/MASS + TIME_STEP*TIME_STEP*K/MASS);
+        float POS_COEF = - (TIME_STEP*K/MASS) / (1 + TIME_STEP*C/MASS + TIME_STEP*TIME_STEP*K/MASS);
+        float FORCE_COEF = (TIME_STEP/MASS) / (1 + TIME_STEP*C/MASS + TIME_STEP*TIME_STEP*K/MASS);
     }
 
     private {
+        import std.traits : ReturnType;
+
         alias Geometry = ReturnType!(GeometryLibrary().buildIcosahedron);
         Particle[] particleList;
         Pair[] pairList;
         Geometry geom;
         vec3 beforePos = vec3(0);
-        float _radius = Radius;
+        float _radius = 0;
     }
 
     public {
@@ -96,7 +97,7 @@ class ElasticSphere : Entity, CollisionCapsule {
         import std.algorithm : map;
         import std.array : array;
 
-        this.geom = GeometryLibrary().buildIcosahedron(RecursionLevel).transform(mat3.scale(vec3(DefaultRadius)));
+        this.geom = GeometryLibrary().buildIcosahedron(RECURSION_LEVEL).transform(mat3.scale(vec3(DEFAULT_RADIUS)));
         this.geom.primitive = Primitive.Patch;
         this.geometry = geom;
 
@@ -139,55 +140,6 @@ class ElasticSphere : Entity, CollisionCapsule {
         return result;
     }
 
-    void step(Floor floor) {
-        import std.algorithm : map, maxElement, min;
-
-        const g = this.center;
-
-        this.rotateParticles(g);
-        this.pos = g;
-
-        //拘束解消
-        foreach (pair; this.pairList) {
-            pair.initialize();
-        }
-        foreach (k; 0..IterationCount){
-            foreach (pair; this.pairList) {
-                pair.solve();
-            }
-        }
-        const baloonForce = this.calcBaloonForce(g);
-        this.contactNormal.nullify();
-
-        this._radius = this.particleList.map!(p => length(p.position - g)).maxElement;
-        
-        const colInfo = detect(floor, this);
-
-        foreach (ref particle; this.particleList) {
-            particle.force += particle.normal * baloonForce;
-            if (this.contactNormal.isNull) particle.force.y -= Gravity * Mass;
-
-            particle.velocity += particle.force * ForceCoef;
-            particle.velocity = min(MaxVelocity, particle.velocity.length) * particle.velocity.safeNormalize;
-
-            particle.position += particle.velocity * TimeStep;
-            particle._ends[0] = particle.position;
-
-            if (colInfo.isNull is false)
-                collision(particle, floor);
-
-            particle.force = vec3(0);
-            particle._ends[1] = particle.position;
-        }
-        this.force.y = 0;
-        foreach (p; this.particleList) {
-            p.force = this.force;
-        }
-        this.force = vec3(0);
-
-        updateGeometry();
-    }
-
     void push(const vec3 forceVector, const float maxPower) {
         import std.algorithm : min;
         import std.math : pow;
@@ -209,6 +161,56 @@ class ElasticSphere : Entity, CollisionCapsule {
             power *= t;
             p.force += power * n;
         }
+    }
+
+    void step(Floor floor) {
+        import std.algorithm : map, maxElement, min;
+
+        const g = this.center;
+
+        this.rotateParticles(g);
+        this.pos = g;
+
+        //拘束解消
+        foreach (pair; this.pairList) {
+            pair.initialize();
+        }
+        foreach (k; 0..ITERATION_COUNT){
+            foreach (pair; this.pairList) {
+                pair.solve();
+            }
+        }
+
+        const baloonForce = this.calcBaloonForce(g);
+        this.contactNormal.nullify();
+
+        this._radius = this.particleList.map!(p => length(p.position - g)).maxElement;
+        
+        const colInfo = detect(floor, this);
+
+        foreach (ref particle; this.particleList) {
+            particle.force += particle.normal * baloonForce;
+            if (this.contactNormal.isNull) particle.force.y -= GRAVITY * MASS;
+
+            particle.velocity += particle.force * FORCE_COEF;
+            particle.velocity = min(MAX_VELOCITY, particle.velocity.length) * particle.velocity.safeNormalize;
+
+            particle.position += particle.velocity * TIME_STEP;
+            particle._ends[0] = particle.position;
+
+            if (colInfo.isNull is false)
+                collision(particle, floor);
+
+            particle.force = vec3(0);
+            particle._ends[1] = particle.position;
+        }
+        this.force.y = 0;
+        foreach (p; this.particleList) {
+            p.force = this.force;
+        }
+        this.force = vec3(0);
+
+        updateGeometry();
     }
 
     private void rotateParticles(vec3 center) {
@@ -263,12 +265,12 @@ class ElasticSphere : Entity, CollisionCapsule {
         return this.particleList.map!(a => a.velocity).sum / this.particleList.length;
     }
 
-    float calcMin(vec3 n) {
+    private float calcMin(vec3 n) {
         import std.algorithm : map, reduce, min;
         return this.particleList.map!(p => p.position.dot(n)).reduce!min;
     }
 
-    float calcMax(vec3 n) {
+    private float calcMax(vec3 n) {
         import std.algorithm : map, reduce, max;
         return this.particleList.map!(p => p.position.dot(n)).reduce!max;
     }
@@ -276,7 +278,7 @@ class ElasticSphere : Entity, CollisionCapsule {
     private float calcBaloonForce(vec3 center) {
         auto area = this.area(center);
         auto volume = this.volume(center);
-        return BaloonCoef * area / (volume * this.particleList.length);
+        return BALOON_COEF * area / (volume * this.particleList.length);
     }
 
     private void collision(Particle particle, Floor floor) {
@@ -289,7 +291,7 @@ class ElasticSphere : Entity, CollisionCapsule {
         if (depth < 1e-5) return;
 
         const po = particle.velocity - dot(particle.velocity, n) * n;
-        particle.velocity -= po * Friction;
+        particle.velocity -= po * FRICTION;
         if (this.contactNormal.isNull) this.contactNormal = normalize(n);
         else this.contactNormal += normalize(n);
         if (dot(particle.velocity, n) < 0) {
@@ -298,12 +300,6 @@ class ElasticSphere : Entity, CollisionCapsule {
         particle.position += n * depth;
         if (this.contactNormal.isNull is false)
             this.contactNormal = normalize(this.contactNormal);
-
-        if (particle.position.y < -2) {
-            with (Log()) {
-                writeln(particle.position);
-            }
-        }
     }
 
     private void updateGeometry() {
@@ -433,7 +429,7 @@ class ElasticSphere : Entity, CollisionCapsule {
 
         void solve() {
             const v1 = this.p1.velocity - this.p0.velocity;
-            const v2 = v1 * VelCoef + this.dist * PosCoef;
+            const v2 = v1 * VEL_COEF + this.dist * POS_COEF;
             const dv = (v2 - v1) * 0.5f;
             this.p0.velocity -= dv;
             this.p1.velocity += dv;
