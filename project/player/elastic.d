@@ -1,49 +1,67 @@
+module player.elastic;
+
 import sbylib.graphics;
 import sbylib.editor;
 import sbylib.collision;
 import sbylib.wrapper.glfw;
 import root;
-import player;
+import player.player;
 
 mixin(Register!(entryPoint));
 
 void entryPoint(Project proj, EventContext context) {
 
-    auto window = proj.get!Window("window");
-    auto player = proj.get!Player("player");
-    auto sphere = new ElasticSphere(player);
-    proj["sphere"] = sphere;
+    bool finished;
+    when(Frame).then({
+        auto camera = proj.get!Camera("camera");
+        auto player = proj.get!Player("player");
 
-    with (context()) {
-        import std.datetime;
-        import std.conv : to;
+        if (camera is null) return;
+        if (player is null) return;
 
-        auto before = Clock.currTime;
-        when(Frame).then({
-            auto now = Clock.currTime;
-            window.title = (now - before).total!"msecs".to!string;
-            before = now;
+        auto elastic = new ElasticBehavior(player, context);
 
-            auto floor = proj.get!Floor("floor");
-            sphere.step(floor);
-        });
+        with (context()) {
+            with (player()) {
+                when(Frame).then({
+                    auto floor = proj.get!Floor("floor");
+                    elastic.step(floor);
+                });
 
-        float pushCount = 0;
-        when(KeyButton.Space.pressing).then({
-            enum DOWN_PUSH_FORCE = 600;
-            enum DOWN_PUSH_FORE_MIN = 800;
-            pushCount += 0.1;
-            sphere.push(vec3(0,-1,0) * DOWN_PUSH_FORCE * pushCount, DOWN_PUSH_FORE_MIN);
+                enum Down = KeyButton.Space;
+                enum Forward = KeyButton.Up;
+                enum Backward = KeyButton.Down;
+                enum Left = KeyButton.Left;
+                enum Right = KeyButton.Right;
+                enum Needle = KeyButton.KeyX;
+                enum DOWN_PUSH_FORCE = 600;
+                enum DOWN_PUSH_FORE_MIN = 800;
+                float pushCount = 0;
 
-            if (pushCount > 1) pushCount = 1;
-        });
-        when(KeyButton.Space.released).then({
-            pushCount = 0;
-        });
-    }
+                when(Down.pressing).then({
+                    pushCount += 0.1;
+                    elastic.push(vec3(0,-1,0) * DOWN_PUSH_FORCE * pushCount, DOWN_PUSH_FORE_MIN);
+
+                    if (pushCount > 1) pushCount = 1;
+                });
+                when(Down.released).then({ pushCount = 0; });
+
+                void move(vec2 v) {
+                    const n = elastic.contactNormal.get(vec3(0,1,0));
+                    elastic.force += mat3.rotFromTo(vec3(0,1,0), n) * camera.rot * vec3(v.x, 0, v.y) * 10;
+                }
+                when(Forward.pressing).then({ move(vec2(0,-1)); });
+                when(Backward.pressing).then({ move(vec2(0,+1)); });
+                when(Left.pressing).then({ move(vec2(-1,0)); });
+                when(Right.pressing).then({ move(vec2(+1,0)); });
+                when(Needle.pressing).then({ });
+            }
+        }
+        finished = true;
+    }).until(() => finished);
 }
 
-class ElasticSphere {
+class ElasticBehavior {
 
     private static immutable {
         float TIME_STEP = 0.02;
@@ -73,12 +91,16 @@ class ElasticSphere {
 
         vec3 force;
         Nullable!vec3 contactNormal;
+        EventContext context;
+        alias context this;
     }
 
-    this(Player player) {
+    this(Player player, EventContext context) {
         this.player = player;
         this.force = vec3(0);
         this.pairList = createPairList(player.geom.indexList, player.particleList);
+
+        this.context = context;
     }
 
     private auto createPairList(uint[] indexList, Player.Particle[] particleList) {
@@ -221,6 +243,7 @@ class ElasticSphere {
         particle.velocity -= po * FRICTION;
         if (this.contactNormal.isNull) this.contactNormal = normalize(n);
         else this.contactNormal += normalize(n);
+
         if (dot(particle.velocity, n) < 0) {
             particle.velocity -= n * dot(n, particle.velocity) * 1;
         }
@@ -230,6 +253,7 @@ class ElasticSphere {
     }
 
     private void updateGeometry() {
+        import std.algorithm : map, sum;
         auto vs = player.geom.attributeList;
         foreach (ref v; vs) {
             v.normal = vec3(0);
@@ -251,6 +275,7 @@ class ElasticSphere {
             v.normal = safeNormalize(p.normal);
         }
         player.geom.update();
+        player.center = player.particleList.map!(p => p.position).sum / player.particleList.length;
     }
 
     //山登りで探索

@@ -1,3 +1,5 @@
+module player.player;
+
 import sbylib.graphics;
 import sbylib.editor;
 import sbylib.collision;
@@ -9,16 +11,49 @@ void entryPoint(Project proj, EventContext context) {
     auto camera = proj.get!Camera("camera");
     auto canvas = proj.get!Canvas("canvas");
 
+    auto player = new Player();
+    proj["player"] = player;
     with (context()) {
-        auto player = new Player;
-        proj["player"] = player;
-
         when(Frame).then({
             with (canvas.getContext()) {
                 camera.capture(player);
             }
         });
     }
+
+    auto cameraControl = proj.get!CameraControl("cameraControl");
+    auto consoleControl = proj.get!ConsoleControl("consoleControl");
+
+    with (cameraControl()) {
+        when((Ctrl + KeyButton.KeyP).pressed).then({
+            cameraControl.unbind();
+            consoleControl.bind();
+        });
+        when(KeyButton.Enter.pressed).then({
+            cameraControl.unbind();
+            player.bind();
+        });
+    }
+
+    with (consoleControl()) {
+        when(KeyButton.Escape.pressed).then({
+            consoleControl.unbind();
+            cameraControl.bind();
+        });
+    }
+
+    with (player()) {
+        when(KeyButton.BackSpace.pressed).then({
+            player.unbind();
+            cameraControl.bind();
+        });
+        when((Ctrl + KeyButton.KeyP).pressed).then({
+            player.unbind();
+            consoleControl.bind();
+        });
+    }
+
+    player.bind();
 }
 
 class Player : Entity, CollisionCapsule {
@@ -42,11 +77,14 @@ class Player : Entity, CollisionCapsule {
         vec3 pos = vec3(0);
         vec3 beforePos = vec3(0);
     }
+    EventContext context;
+    alias context this;
 
     this() {
         import std.algorithm : map;
         import std.array : array;
 
+        this.context = new EventContext;
         this.geom = GeometryLibrary().buildIcosahedron(RECURSION_LEVEL)
             .transform(mat3.scale(vec3(DEFAULT_RADIUS)));
         this.geom.primitive = Primitive.Patch;
@@ -201,6 +239,7 @@ class PlayerMaterial : Material {
         out vec3 vposition;
         out vec3 normal4;
 
+        uniform vec3 center;
         uniform mat4 viewMatrix;
         uniform mat4 projectionMatrix;
 
@@ -211,7 +250,7 @@ class PlayerMaterial : Material {
                 p += gl_TessCoord[i] * gl_in[i].gl_Position;
                 n += gl_TessCoord[i] * normal3[i];
             }
-            p.xyz /= length(n);
+            p.xyz = (p.xyz - center) / length(n) + center;
 
             gl_Position = projectionMatrix * viewMatrix * p;
             normal4 = (viewMatrix * vec4(n, 0)).xyz;

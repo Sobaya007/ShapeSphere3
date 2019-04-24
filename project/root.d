@@ -13,32 +13,23 @@ void root(Project proj, EventContext context) {
     setupFloor(proj);
     setupConsole(proj);
 
-    auto cameraControl = proj.get!CameraControl("cameraControl");
-    auto consoleControl = proj.get!ConsoleControl("consoleControl");
+    auto window = proj.get!Window("window");
 
-    cameraControl.bind();
-    with (cameraControl()) {
-        when((Ctrl + KeyButton.KeyP).pressed).then({
-            cameraControl.unbind();
-            consoleControl.bind();
-        });
-    }
-
-    with (consoleControl()) {
-        when(KeyButton.Escape.pressed).then({
-            cameraControl.bind();
-            consoleControl.unbind();
+    with (context()) {
+        when((Ctrl + KeyButton.KeyR).pressed).then({
+            auto oldTitle = window.title;
+            window.title = "reloading...";
+            proj.reload();
+            window.title = oldTitle;
         });
     }
 
     proj.loadErrorHandler = (Exception e) {
-        with (GUI()) {
-            lineHeight = 18.pixel;
-            background(Color(0,0,0,0.5));
-            text(e.msg);
-            waitKey();
-            start();
+        with (Log()) {
+            writeln(e.msg);
         }
+        import std.stdio : writeln;
+        writeln(e.msg);
     };
 
     proj.load();
@@ -67,8 +58,8 @@ private void setupCanvas(Project proj) {
 private void setupCamera(Project proj) {
     with (PerspectiveCamera.Builder()) {
         near = 0.1;
-        far = 10;
-        fov = 90.deg;
+        far = 200;
+        fov = 60.deg;
         aspect = 1;
 
         auto camera = build();
@@ -83,7 +74,7 @@ private void setupFloor(Project proj) {
     Floor f;
     with (Floor.Builder()) {
         geometry = GeometryLibrary().buildPlane().transform(
-                mat3.axisAngle(vec3(1,0,0), 90.deg) * mat3.scale(vec3(10)));
+                mat3.axisAngle(vec3(1,0,0), 90.deg) * mat3.scale(vec3(50)));
         f = build();
         f.pos = vec3(0,-2,0);
     }
