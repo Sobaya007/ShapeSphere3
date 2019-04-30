@@ -1,9 +1,9 @@
-module camera.chase;
+module project.camera.chase;
 
 import sbylib.graphics;
 import sbylib.editor;
 import sbylib.math;
-import player.player;
+import project.player.player;
 
 mixin(Register!(entryPoint));
 

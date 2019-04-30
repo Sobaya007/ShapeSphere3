@@ -1,11 +1,11 @@
-module player.elastic;
+module project.player.elastic;
 
 import sbylib.graphics;
 import sbylib.editor;
 import sbylib.collision;
 import sbylib.wrapper.glfw;
 import root;
-import player.player;
+import project.player.player;
 
 mixin(Register!(entryPoint));
 

@@ -1,4 +1,4 @@
-module player.player;
+module project.player.player;
 
 import sbylib.graphics;
 import sbylib.editor;

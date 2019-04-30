@@ -66,7 +66,9 @@ private void setupCamera(Project proj) {
         camera.pos = vec3(0);
         proj["camera"] = cast(Camera)camera;
 
-        proj["cameraControl"] = new CameraControl(camera);
+        auto control = new CameraControl(camera);
+        control.speed *= 4;
+        proj["cameraControl"] = control;
     }
 }
 
