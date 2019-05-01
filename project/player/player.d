@@ -70,31 +70,29 @@ class Player : Entity, CollisionCapsule {
     public {
         import std.traits : ReturnType;
 
-        alias Geometry = ReturnType!(GeometryLibrary().buildIcosahedron);
-        Geometry geom;
+        alias PlayerGeometry = Geometry!Attribute;
+        PlayerGeometry geom;
         Particle[] particleList;
+        Particle[2][] pairList;
         float _radius = 0;
         vec3 pos = vec3(0);
         vec3 beforePos = vec3(0);
+        EventContext context;
+        alias context this;
     }
-    EventContext context;
-    alias context this;
 
     this() {
-        import std.algorithm : map;
-        import std.array : array;
-
         this.context = new EventContext;
-        this.geom = GeometryLibrary().buildIcosahedron(RECURSION_LEVEL)
-            .transform(mat3.scale(vec3(DEFAULT_RADIUS)));
-        this.geom.primitive = Primitive.Patch;
-        this.geometry = geom;
 
-        this.particleList = geom.attributeList
-            .map!(a => new Particle(a.position.xyz)).array;
+        auto r = createGeometry();
+
+        this.geometry = this.geom = r.geom;
+        this.particleList = r.particleList;
+        this.pairList = r.pairList;
 
         this.innerLevel = 3;
         this.outerLevel = 3;
+        this.needleCount = 0;
     }
 
     float calcVolume(vec3 center) const {
@@ -148,7 +146,7 @@ class Player : Entity, CollisionCapsule {
         return particleList.map!(p => p.velocity).sum / particleList.length;
     }
 
-    vec3 calcAngleVelocity() const {
+    vec3 calcAngularVelocity() const {
         import std.algorithm : map, sum;
 
         const c = this.calcCenter();
@@ -168,12 +166,12 @@ class Player : Entity, CollisionCapsule {
         return [pos, beforePos];
     }
 
-    class Particle : CollisionCapsule {
+    static class Particle : CollisionCapsule {
         vec3 position; /* in World, used for Render */
         vec3 velocity;
         vec3 normal; /* in World */
         vec3 force;
-        bool isStinger;
+        bool isNeedle;
         Particle[] next;
         vec3[2] _ends;
         vec3 beforePos;
@@ -204,13 +202,16 @@ class PlayerMaterial : Material {
 
     mixin VertexShaderSource!(q{
         #version 450
-        in vec4 position;
+        in vec3 position;
         in vec3 normal;
+        in float isNeedle;
         out vec3 normal2;
+        out float isNeedle2;
 
         void main() {
-            gl_Position = position;
+            gl_Position = vec4(position,1);
             normal2 = normal;
+            isNeedle2 = isNeedle;
         }
     });
 
@@ -218,13 +219,16 @@ class PlayerMaterial : Material {
         #version 450
         layout(vertices=3) out;
         in vec3 normal2[];
+        in float isNeedle2[];
         out vec3 normal3[];
+        out float isNeedle3[];
         uniform int outerLevel;
         uniform int innerLevel;
 
         void main(){
             gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
             normal3[gl_InvocationID] = normal2[gl_InvocationID];
+            isNeedle3[gl_InvocationID] = isNeedle2[gl_InvocationID];
             gl_TessLevelOuter[0] = outerLevel;
             gl_TessLevelOuter[1] = outerLevel;
             gl_TessLevelOuter[2] = outerLevel;
@@ -236,26 +240,26 @@ class PlayerMaterial : Material {
         #version 450
         layout(triangles) in;
         in vec3 normal3[];
-        out vec3 vposition;
+        in float isNeedle3[];
         out vec3 normal4;
+        out float isNeedle4;
 
         uniform vec3 center;
-        uniform mat4 viewMatrix;
-        uniform mat4 projectionMatrix;
 
         void main(){
             vec4 p = vec4(0);
             vec3 n = vec3(0);
+            float isNeedle = 0;
             for (int i = 0; i < 3; i++) {
                 p += gl_TessCoord[i] * gl_in[i].gl_Position;
                 n += gl_TessCoord[i] * normal3[i];
+                isNeedle += gl_TessCoord[i] * isNeedle3[i];
             }
             p.xyz = (p.xyz - center) / length(n) + center;
 
-            gl_Position = projectionMatrix * viewMatrix * p;
-            normal4 = (viewMatrix * vec4(n, 0)).xyz;
-            vec4 pv = viewMatrix * p;
-            vposition = pv.xyz / p.w;
+            gl_Position = p;
+            normal4 = n;
+            isNeedle4 = isNeedle;
         }
     };
 
@@ -263,16 +267,23 @@ class PlayerMaterial : Material {
         #version 450
         layout(triangles) in;
         layout(triangle_strip,max_vertices=4) out;
-        in vec3 vposition[];
         in vec3 normal4[];
+        in float isNeedle4[];
         out vec3 pos;
         out vec3 n;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+        uniform float needleCount;
+        uniform vec3 center;
         
         void main(){
             for (int i = 0; i < 3; i++) {
-                gl_Position = gl_in[i].gl_Position;
-                pos = vposition[i];
-                n = normal4[i];
+                vec4 p = gl_in[i].gl_Position;
+                float s = mix(1, isNeedle4[i] * 0.7 + 0.8, needleCount);
+                p.xyz = (p.xyz - center) * s + center;
+                gl_Position = projectionMatrix * viewMatrix * p;
+                pos = (viewMatrix * p).xyz;
+                n = (viewMatrix * vec4(normal4[i],0)).xyz;
                 EmitVertex();
             }
         
@@ -313,3 +324,88 @@ class PlayerMaterial : Material {
         }
     });
 }
+
+private struct Attribute {
+    @transformable vec3 position;
+    @transformable vec3 normal;
+    float isNeedle;
+}
+
+private auto createGeometry() {
+    with (GeometryBuilder!Attribute()) {
+        auto r = createParticle();
+        foreach (p; r.particleList) {
+            with (p) {
+                add(Attribute(position, normal, isNeedle ? 1 : 0));
+            }
+        }
+        foreach (i; r.indexList) {
+            select(i);
+        }
+
+        auto geom = build();
+        geom.primitive = Primitive.Patch;
+
+        struct Result {
+            Geometry!Attribute geom;
+            Player.Particle[] particleList;
+            Player.Particle[2][] pairList;
+        }
+        return Result(geom, r.particleList, r.pairList);
+    }
+}
+
+private auto createParticle() {
+    import std.algorithm : map;
+    import std.array : array;
+    auto geom = GeometryLibrary().buildIcosahedron(Player.RECURSION_LEVEL)
+        .transform(mat3.scale(vec3(Player.DEFAULT_RADIUS)));
+    auto particleList = geom.attributeList
+        .map!(a => new Player.Particle(a.position.xyz)).array;
+
+    auto pairList = createPairList(geom.indexList, particleList);
+
+    foreach (p; particleList) {
+        import std.algorithm : all;
+        p.isNeedle = p.next.all!(a => a.isNeedle == false);
+    }
+
+    struct Result {
+        Player.Particle[] particleList;
+        Player.Particle[2][] pairList;
+        uint[] indexList;
+    }
+
+    return Result(particleList, pairList, geom.indexList);
+}
+
+private auto createPairList(uint[] indexList, Player.Particle[] particleList) {
+    Player.Particle[2][] result;
+
+    alias ID = uint[2];
+    ID pairID(uint a,uint b) { return a < b ? [a,b] : [b,a]; }
+
+    ID[] pairIDList;
+
+    foreach (i; 0..indexList.length/3) {
+        foreach (j; 0..3) {
+            import std.algorithm : canFind;
+
+            auto id = pairID(
+                indexList[i*3+(j+0)%3],
+                indexList[i*3+(j+1)%3]);
+
+            if (pairIDList.canFind(id)) continue;
+            pairIDList ~= id;
+
+            auto p0 = particleList[id[0]];
+            auto p1 = particleList[id[1]];
+            result ~= [p0, p1];
+            p0.next ~= p1;
+            p1.next ~= p0;
+        }
+    }
+
+    return result;
+}
+

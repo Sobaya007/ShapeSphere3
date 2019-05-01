@@ -22,8 +22,8 @@ void entryPoint(Project proj, EventContext context) {
                 when(Frame).then({ control.step(); });
                 enum RotLeft = KeyButton.KeyQ;
                 enum RotRight = KeyButton.KeyE;
-                when(RotLeft.pressing).then({ control.turn(+1); });
-                when(RotRight.pressing).then({ control.turn(-1); });
+                when(RotLeft.pressing).then({ control.turn(-1); });
+                when(RotRight.pressing).then({ control.turn(+1); });
             }
         });
     }

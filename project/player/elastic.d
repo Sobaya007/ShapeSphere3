@@ -6,6 +6,10 @@ import sbylib.collision;
 import sbylib.wrapper.glfw;
 import root;
 import project.player.player;
+import project.stage.stage;
+import std.container : Array;
+import std.conv;
+import std.datetime.stopwatch : StopWatch;
 
 mixin(Register!(entryPoint));
 
@@ -20,12 +24,20 @@ void entryPoint(Project proj, EventContext context) {
         if (player is null) return;
 
         auto elastic = new ElasticBehavior(player, context);
+        proj["elastic"] = elastic;
 
         with (context()) {
+
             with (player()) {
+                StopWatch sw;
+                sw.start();
+
                 when(Frame).then({
-                    auto floor = proj.get!Floor("floor");
-                    elastic.step(floor);
+                    if (auto stage = proj.get!StageModel("stage")) {
+                        elastic.step(stage);
+                        Window.getCurrentWindow().title = sw.peek.to!string;
+                        sw.reset();
+                    }
                 });
 
                 enum Down = KeyButton.Space;
@@ -54,7 +66,13 @@ void entryPoint(Project proj, EventContext context) {
                 when(Backward.pressing).then({ move(vec2(0,+1)); });
                 when(Left.pressing).then({ move(vec2(-1,0)); });
                 when(Right.pressing).then({ move(vec2(+1,0)); });
-                when(Needle.pressing).then({ });
+                when(Needle.pressing).then({ 
+                    import project.player.needle : NeedleBehavior;
+                    if (auto needle = proj.get!NeedleBehavior("needle")) {
+                        elastic.unbind();
+                        needle.bind();
+                    }
+                });
             }
         }
         finished = true;
@@ -82,8 +100,8 @@ class ElasticBehavior {
     }
 
     private {
-        Pair[] pairList;
         Player player;
+        Pair[] pairList;
     }
 
     public {
@@ -96,41 +114,14 @@ class ElasticBehavior {
     }
 
     this(Player player, EventContext context) {
+        import std.algorithm : map;
+        import std.array : array;
+
         this.player = player;
         this.force = vec3(0);
-        this.pairList = createPairList(player.geom.indexList, player.particleList);
+        this.pairList = player.pairList.map!(pair => new Pair(pair[0], pair[1])).array;
 
         this.context = context;
-    }
-
-    private auto createPairList(uint[] indexList, Player.Particle[] particleList) {
-        Pair[] result;
-
-        alias ID = uint[2];
-        ID pairID(uint a,uint b) { return a < b ? [a,b] : [b,a]; }
-
-        ID[] pairIDList;
-
-        foreach (i; 0..indexList.length/3) {
-            foreach (j; 0..3) {
-                import std.algorithm : canFind;
-
-                auto id = pairID(
-                    indexList[i*3+(j+0)%3],
-                    indexList[i*3+(j+1)%3]);
-
-                if (pairIDList.canFind(id) is true) continue;
-                pairIDList ~= id;
-
-                auto p0 = particleList[id[0]];
-                auto p1 = particleList[id[1]];
-                result ~= new Pair(p0, p1);
-                p0.next ~= p1;
-                p1.next ~= p0;
-            }
-        }
-
-        return result;
     }
 
     void push(const vec3 forceVector, const float maxPower) {
@@ -156,12 +147,14 @@ class ElasticBehavior {
         }
     }
 
-    void step(Floor floor) {
-        import std.algorithm : map, maxElement, min;
+    void step(StageModel stage) {
+        import std.algorithm : map, minElement, maxElement, min;
+        import std.array : array;
 
         const g = player.calcCenter();
 
         this.rotateParticles(g);
+        player.beforePos = player.pos;
         player.pos = g;
 
         //拘束解消
@@ -177,9 +170,14 @@ class ElasticBehavior {
         const baloonForce = this.calcBaloonForce(g);
         this.contactNormal.nullify();
 
-        player._radius = player.particleList.map!(p => length(p.position - g)).maxElement;
+        player._radius = player.particleList
+            .map!(p => player.ends.array.map!(e => length(e - p.position)).minElement).maxElement * 2;
         
-        const colInfo = detect(floor, player);
+        Array!ModelPolygon polygonList;
+        stage.polygonSet.detect!(ModelPolygon, Player)(player,
+            (ModelPolygon polygon, Player, CapsulePolygonResult result) {
+            polygonList ~= polygon;
+        });
 
         foreach (ref particle; player.particleList) {
             particle.force += particle.normal * baloonForce;
@@ -191,8 +189,9 @@ class ElasticBehavior {
             particle.position += particle.velocity * TIME_STEP;
             particle._ends[0] = particle.position;
 
-            if (colInfo.isNull is false)
-                collision(particle, floor);
+            foreach (polygon; polygonList) {
+                collision(particle, polygon);
+            }
 
             particle.force = vec3(0);
             particle._ends[1] = particle.position;
@@ -230,13 +229,15 @@ class ElasticBehavior {
         return BALOON_COEF * area / (volume * player.particleList.length);
     }
 
-    private void collision(Player.Particle particle, Floor floor) {
-        auto colInfo = detect(floor, particle);
+    private void collision(Player.Particle particle, ModelPolygon polygon) {
+        auto colInfo = detect(polygon, particle);
         if (colInfo.isNull) return;
 
+        const n = -normalize(cross(polygon.vertices[0] - polygon.vertices[1], polygon.vertices[1] - polygon.vertices[2]));
+
         const pushVector = colInfo.pushVector(particle);
-        const depth = pushVector.length;
-        const n = pushVector / depth;
+        const depth = dot(n, pushVector);
+
         if (depth < 1e-5) return;
 
         const po = particle.velocity - dot(particle.velocity, n) * n;
@@ -271,7 +272,7 @@ class ElasticBehavior {
         }
         foreach (i,ref v; vs) {
             auto p = player.particleList[i];
-            v.position = vec4(p.position, 1);
+            v.position = p.position;
             v.normal = safeNormalize(p.normal);
         }
         player.geom.update();
