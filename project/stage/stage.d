@@ -14,7 +14,6 @@ void entryPoint(Project proj, EventContext context) {
 
     auto camera = proj.get!Camera("camera");
     auto canvas = proj.get!Canvas("canvas");
-    auto player = proj.get!Player("player");
 
     with (context()) {
         auto model = StageModel.load("resource/test.blend");
@@ -26,16 +25,6 @@ void entryPoint(Project proj, EventContext context) {
             }
             model.polygonSet = build();
         }
-
-        /*
-        when(Frame).then({
-            Window.getCurrentWindow().title = "not hit";
-        });
-
-        when(model.polygonSet.collisionDetected!(ModelPolygon)(player)).then((ModelPolygon polygon, Player player, CapsulePolygonResult info) {
-            Window.getCurrentWindow().title = "hit";
-        });
-        */
         
         when(Frame).then({
             with (canvas.getContext()) {
@@ -114,18 +103,21 @@ ModelPolygon[] polygons(Model model) {
 ModelPolygon[] polygons(Node node, Scene scene, mat4 frameMatrix) {
     frameMatrix = node.transformation * frameMatrix;
     ModelPolygon[] result;
-    foreach (mesh; node.meshes) result ~= scene.meshes[mesh].polygons(frameMatrix);
+    foreach (mesh; node.meshes) result ~= scene.meshes[mesh].polygons(scene, frameMatrix);
     foreach (child; node.children) result ~= child.polygons(scene, frameMatrix);
     return result;
 }
 
-ModelPolygon[] polygons(Mesh mesh, mat4 frameMatrix) {
-    import std.algorithm : map;
-    import std.array : array;
+ModelPolygon[] polygons(Mesh mesh, Scene scene, mat4 frameMatrix) {
+    import std.algorithm : map, find;
+    import std.array : array, front;
+
+    auto material = scene.materials[mesh.materialIndex];
+    auto name = material.properties.find!(p => p.key == "?mat.name").front.data!string;
 
     ModelPolygon[] result;
     foreach (face; mesh.faces) {
-        result ~= new ModelPolygon(face.indices.map!(i => (frameMatrix * vec4(mesh.vertices[i].xzy,1)).xyz).array);
+        result ~= new ModelPolygon(face.indices.map!(i => (frameMatrix * vec4(mesh.vertices[i].xzy,1)).xyz).array, name);
     }
     return result;
 }
@@ -133,8 +125,11 @@ ModelPolygon[] polygons(Mesh mesh, mat4 frameMatrix) {
 class ModelPolygon : CollisionPolygon {
 
     private vec3[] _vertices;
-    this(const vec3[] _vertices) {
+    string materialName;
+    
+    this(const vec3[] _vertices, string materialName) {
         this._vertices = _vertices.dup;
+        this.materialName = materialName;
     }
 
     override vec3[] vertices() {

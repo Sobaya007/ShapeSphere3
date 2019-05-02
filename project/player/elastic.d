@@ -73,6 +73,10 @@ void entryPoint(Project proj, EventContext context) {
                         needle.bind();
                     }
                 });
+
+                when(context.bound).then({
+                    pushCount = 0;
+                });
             }
         }
         finished = true;
@@ -196,9 +200,11 @@ class ElasticBehavior {
             particle.force = vec3(0);
             particle._ends[1] = particle.position;
         }
+
+        const contactCount = this.calcContactCount(polygonList);
         this.force.y = 0;
         foreach (p; player.particleList) {
-            p.force = this.force;
+            p.force = this.force * (0.1 + contactCount);
         }
         this.force = vec3(0);
 
@@ -251,6 +257,23 @@ class ElasticBehavior {
         particle.position += n * depth;
         if (this.contactNormal.isNull is false)
             this.contactNormal = normalize(this.contactNormal);
+    }
+
+    private size_t calcContactCount(ref Array!ModelPolygon polygonList) {
+        import std.algorithm : map, filter, min, sort;
+        import std.array : array;
+        import std.range : walkLength;
+
+        const contactCount = player.particleList.filter!((particle) {
+            foreach (polygon; polygonList) {
+                auto info = detect(polygon, particle);
+                if (info.isNull) continue;
+                if (info.pushVector(particle).length < 0.01) return true;
+            }
+            return false;
+        }).walkLength;
+
+        return contactCount;
     }
 
     private void updateGeometry() {

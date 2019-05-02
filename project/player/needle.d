@@ -57,8 +57,9 @@ void entryPoint(Project proj, EventContext context) {
                         if (auto elastic = proj.get!ElasticBehavior("elastic")) {
                             elastic.bind();
                             needle.unbind();
-                            //auto elasticSphere = parent.transit!ElasticSphere;
-                            //elasticSphere.initialize(this);
+                            foreach (particle; player.particleList) {
+                                particle.velocity = needle.calcVelocity(particle.position);
+                            }
                         }
                         return;
                     }
@@ -160,33 +161,31 @@ class NeedleBehavior {
     private void collision(StageModel stage) {
 
         Array!Contact contacts;
-        //const lastContactNormal = this.contactNormal;
+        const lastContactNormal = this.contactNormal;
         this.contactNormal.nullify();
-        Nullable!size_t newWallIndex;
-        Nullable!size_t lastWallIndex;
+        Nullable!Contact newWallContact;
+        Nullable!Contact lastWallContact;
         stage.polygonSet.detect!(ModelPolygon, Player)(player,
-            (ModelPolygon, Player, CapsulePolygonResult result) {
+            (ModelPolygon polygon, Player player, CapsulePolygonResult result) {
 
-            contacts ~= Contact(result, this);
-            /*
-            auto matName = colInfo.getOther(this.entity).getUserData!(string)("MaterialName").getOrElse("");
-            if (matName.canFind("Sand")) {
-                auto nc = normalize(colInfo.getPushVector(this.entity));
+            auto contact = Contact(result, this);
+            contacts ~= contact;
+            if (polygon.materialName == "Sand") {
+                auto nc = result.pushVector(player).normalize;
                 if (this.contactNormal.isNull || nc.y < this.contactNormal.y) {
-                    this.contactNormal = Just(nc);
+                    this.contactNormal = nc;
                     if (this.contactNormal != lastContactNormal) {
-                        newWallIndex = Just(i);
+                        newWallContact = contact;
                     } else {
-                        lastWallIndex = Just(i);
+                        lastWallContact = contact;
                     }
                 }
             }
-            */
         });
-        if (newWallIndex.isNull is false) {
-            contacts[newWallIndex.get()].wall = SAND_WALL;
-        } else if (lastWallIndex.isNull is false) {
-            contacts[lastWallIndex.get()].wall = SAND_WALL;
+        if (newWallContact.isNull is false) {
+            newWallContact.wall = SAND_WALL;
+        } else if (lastWallContact.isNull is false) {
+            lastWallContact.wall = SAND_WALL;
         }
         foreach (ref c; contacts) {
             c.initialize();
