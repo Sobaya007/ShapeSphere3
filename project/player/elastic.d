@@ -4,6 +4,7 @@ import sbylib.graphics;
 import sbylib.editor;
 import sbylib.collision;
 import sbylib.wrapper.glfw;
+import sbylib.wrapper.gl;
 import root;
 import project.player.player;
 import project.stage.stage;
@@ -106,6 +107,7 @@ class ElasticBehavior {
     private {
         Player player;
         Pair[] pairList;
+        AABBCollisionDetection detector;
     }
 
     public {
@@ -126,6 +128,13 @@ class ElasticBehavior {
         this.pairList = player.pairList.map!(pair => new Pair(pair[0], pair[1])).array;
 
         this.context = context;
+
+        this.detector = new AABBCollisionDetection;
+        this.detector.end0s.data.allocate(player.particleList.length);
+        this.detector.end1s.data.allocate(player.particleList.length);
+        this.detector.positions.data.allocate(100);
+        this.detector.normals.data.allocate(100);
+        this.detector.result.data.allocate(player.particleList.length * 100);
     }
 
     void push(const vec3 forceVector, const float maxPower) {
@@ -151,8 +160,11 @@ class ElasticBehavior {
         }
     }
 
+    import std.datetime.stopwatch : StopWatch;
+    StopWatch sw;
+
     void step(StageModel stage) {
-        import std.algorithm : map, minElement, maxElement, min;
+        import std.algorithm : map, minElement, maxElement, min, max;
         import std.array : array;
 
         const g = player.calcCenter();
@@ -183,7 +195,9 @@ class ElasticBehavior {
             polygonList ~= polygon;
         });
 
-        foreach (ref particle; player.particleList) {
+        sw.reset();
+
+        foreach (particle; player.particleList) {
             particle.force += particle.normal * baloonForce;
             if (this.contactNormal.isNull) particle.force.y -= GRAVITY * MASS;
 
@@ -192,9 +206,29 @@ class ElasticBehavior {
 
             particle.position += particle.velocity * TIME_STEP;
             particle._ends[0] = particle.position;
+        }
 
+        calcBroad(polygonList);
+
+        int c;
+        foreach (i; 0..detector.sizeA * detector.sizeB) {
+            c += detector.result.data[i];
+        }
+        with (Log()) {
+            writeln("sizeA = ", detector.sizeA);
+            writeln("sizeB = ", detector.sizeB);
+            writeln("c = ", c);
+            writeln("colCount = ", colCount);
+        }
+        colCount = 0;
+
+        foreach (i, ref particle; player.particleList) {
+            int cnt;
             foreach (polygon; polygonList) {
-                collision(particle, polygon);
+                if (detector.result.data[i + cnt * detector.sizeA] == 1) {
+                    collision(particle, polygon);
+                }
+                cnt++;
             }
 
             particle.force = vec3(0);
@@ -229,15 +263,80 @@ class ElasticBehavior {
         }
     }
 
+    private void calcBroad(ref Array!ModelPolygon polygonList) {
+        with (detector) {
+            foreach (i, particle; player.particleList) {
+                end0s.data[i] = particle.ends[0];
+                end1s.data[i] = particle.ends[1];
+                radius = particle.radius;
+            }
+            end0s.send();
+            end1s.send();
+            sizeA = cast(int)player.particleList.length;
+
+            int cnt;
+            foreach (polygon; polygonList) {
+                positions.data[cnt] = polygon.vertices[0];
+                normals.data[cnt] =
+                    cross(polygon.vertices[0] - polygon.vertices[1], polygon.vertices[1] - polygon.vertices[2]);
+                cnt++;
+            }
+            positions.send();
+            normals.send();
+            sizeB = cnt;
+
+            compute([sizeA, sizeB, 1]);
+            result.fetch();
+        }
+
+        /*
+        with (detector) {
+            sizeA = cast(int)player.particleList.length;
+            sizeB = cast(int)polygonList.length;
+            foreach (indexA, particle; player.particleList) {
+                auto A = particle.getAABB();
+                minAs.data[indexA] = A.min;
+                maxAs.data[indexA] = A.max;
+
+                int indexB;
+                foreach (polygon; polygonList) {
+                    auto B = polygon.getAABB();
+                    minBs.data[indexB] = B.min;
+                    maxBs.data[indexB] = B.max;
+
+                    vec3 minA = minAs.data[indexA];
+                    vec3 maxA = maxAs.data[indexA];
+                    vec3 minB = minBs.data[indexB];
+                    vec3 maxB = maxBs.data[indexB];
+
+                    int r = 1;
+                    if (maxA.x < minB.x) r = 0;
+                    if (maxA.y < minB.y) r = 0;
+                    if (maxA.z < minB.z) r = 0;
+                    if (maxB.x < minA.x) r = 0;
+                    if (maxB.y < minA.y) r = 0;
+                    if (maxB.z < minA.z) r = 0;
+                    result.data[indexA + indexB * sizeA] = r;
+
+                    indexB++;
+                }
+            }
+            */
+    }
+
+
     private float calcBaloonForce(vec3 center) const {
         auto area = player.calcArea(center);
         auto volume = player.calcVolume(center);
         return BALOON_COEF * area / (volume * player.particleList.length);
     }
 
+    int colCount;
     private void collision(Player.Particle particle, ModelPolygon polygon) {
         auto colInfo = detect(polygon, particle);
         if (colInfo.isNull) return;
+        colCount++;
+        sw.start();
 
         const n = -normalize(cross(polygon.vertices[0] - polygon.vertices[1], polygon.vertices[1] - polygon.vertices[2]));
 
@@ -257,6 +356,7 @@ class ElasticBehavior {
         particle.position += n * depth;
         if (this.contactNormal.isNull is false)
             this.contactNormal = normalize(this.contactNormal);
+        sw.stop();
     }
 
     private size_t calcContactCount(ref Array!ModelPolygon polygonList) {
@@ -349,4 +449,55 @@ class ElasticBehavior {
             this.p1.velocity += dv;
         }
     }
+}
+
+class AABBCollisionDetection : Compute {
+
+    mixin ComputeShaderSource!q{
+        #version 450
+
+        layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+        layout(std430,binding=0) readonly buffer End0 {
+            vec3 data[];
+        } end0s;
+
+        layout(std430,binding=1) readonly buffer End1 {
+            vec3 data[];
+        } end1s;
+
+        uniform float radius;
+
+
+        layout(std430,binding=2) readonly buffer Position {
+            vec3 data[];
+        } positions;
+
+        layout(std430,binding=3) readonly buffer Normal {
+            vec3 data[];
+        } normals;
+
+        layout(std430,binding=4) writeonly buffer Result {
+            uint data[];
+        } result;
+
+        uniform int sizeA;
+        uniform int sizeB;
+
+        void main() {
+            uint indexA = gl_GlobalInvocationID.x % sizeA;
+            uint indexB = gl_GlobalInvocationID.x / sizeA;
+            vec3 e0 = end0s.data[indexA];
+            vec3 e1 = end1s.data[indexA];
+            vec3 p = positions.data[indexB];
+            vec3 n = normals.data[indexB];
+
+            float s0 = dot(e0 - p, n);
+            float s1 = dot(e1 - p, n);
+            int r = 1;
+            if (s0 * s1 >= 0 && min(abs(s0), abs(s1)) > radius) r = 0;
+
+            result.data[gl_GlobalInvocationID.x] = r;
+        }
+    };
 }

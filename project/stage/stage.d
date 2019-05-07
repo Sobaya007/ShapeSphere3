@@ -59,8 +59,8 @@ class StageMaterial : Material {
         #version 450
 
         layout (triangles) in;
-        layout (triangle_strip, max_vertices = 3) out;
-        //layout (line_strip, max_vertices=6) out;
+        //layout (triangle_strip, max_vertices = 3) out;
+        layout (line_strip, max_vertices=6) out;
 
         out vec3 worldNormal;
 
@@ -75,9 +75,9 @@ class StageMaterial : Material {
                 gl_Position = projectionMatrix * viewMatrix * gl_in[(i+0)%3].gl_Position; 
                 worldNormal = normal;
                 EmitVertex();
-                //gl_Position = projectionMatrix * viewMatrix * gl_in[(i+1)%3].gl_Position; 
-                //worldNormal = normal;
-                //EmitVertex();
+                gl_Position = projectionMatrix * viewMatrix * gl_in[(i+1)%3].gl_Position; 
+                worldNormal = normal;
+                EmitVertex();
             }
 
             EndPrimitive();
@@ -119,6 +119,10 @@ ModelPolygon[] polygons(Mesh mesh, Scene scene, mat4 frameMatrix) {
     foreach (face; mesh.faces) {
         result ~= new ModelPolygon(face.indices.map!(i => (frameMatrix * vec4(mesh.vertices[i].xzy,1)).xyz).array, name);
     }
+    import std.algorithm : map, sort, group;
+    import std.array : array;
+    import std.stdio : writeln;
+    mesh.faces.map!(face => face.indices.length).array.sort.group.writeln;
     return result;
 }
 

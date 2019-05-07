@@ -188,7 +188,7 @@ class Player : Entity, CollisionCapsule {
         }
 
         override float radius() {
-            return 0.01;
+            return 0.0001;
         }
 
         override vec3[2] ends() {
