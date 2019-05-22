@@ -187,7 +187,7 @@ class ElasticBehavior {
         this.contactNormal.nullify();
 
         player._radius = player.particleList
-            .map!(p => player.ends.array.map!(e => length(e - p.position)).minElement).maxElement * 2;
+            .map!(p => player.ends.array.map!(e => length(e - p.position)).minElement).maxElement;
         
         Array!ModelPolygon polygonList;
         stage.polygonSet.detect!(ModelPolygon, Player)(player,
@@ -333,15 +333,13 @@ class ElasticBehavior {
 
     int colCount;
     private void collision(Player.Particle particle, ModelPolygon polygon) {
-        auto colInfo = detect(polygon, particle);
+        const colInfo = detect(polygon, particle);
         if (colInfo.isNull) return;
         colCount++;
         sw.start();
 
         const n = -normalize(cross(polygon.vertices[0] - polygon.vertices[1], polygon.vertices[1] - polygon.vertices[2]));
-
-        const pushVector = colInfo.pushVector(particle);
-        const depth = dot(n, pushVector);
+        const depth = dot(n, polygon.vertices[0] - particle.position);
 
         if (depth < 1e-5) return;
 
@@ -351,9 +349,9 @@ class ElasticBehavior {
         else this.contactNormal += normalize(n);
 
         if (dot(particle.velocity, n) < 0) {
-            particle.velocity -= n * dot(n, particle.velocity) * 1;
+            particle.velocity -= n * dot(n, particle.velocity) * 1.2;
         }
-        particle.position += n * depth;
+        particle.position += n * (depth + 0.4);
         if (this.contactNormal.isNull is false)
             this.contactNormal = normalize(this.contactNormal);
         sw.stop();
