@@ -108,6 +108,7 @@ class ElasticBehavior {
         Player player;
         Pair[] pairList;
         AABBCollisionDetection detector;
+        ContactSolver contactSolver;
     }
 
     public {
@@ -132,9 +133,21 @@ class ElasticBehavior {
         this.detector = new AABBCollisionDetection;
         this.detector.end0s.data.allocate(player.particleList.length);
         this.detector.end1s.data.allocate(player.particleList.length);
-        this.detector.positions.data.allocate(100);
-        this.detector.normals.data.allocate(100);
-        this.detector.result.data.allocate(player.particleList.length * 100);
+        this.detector.positions.data.allocate(500);
+        this.detector.normals.data.allocate(500);
+        this.detector.result.data.allocate(player.particleList.length * 500);
+
+        /*
+        this.contactSolver = new ContactSolver;
+        with (contactSolver) {
+            polygonPositions.data.allocate(500);
+            polygonNormals.data.allocate(500);
+            particleIndices.data.allocate(500);
+            targetVelocities.data.allocate(500);
+            particlePositions.data.allocate(player.particleList.length);
+            particleVelocities.data.allocate(player.particleList.length);
+        }
+        */
     }
 
     void push(const vec3 forceVector, const float maxPower) {
@@ -160,9 +173,6 @@ class ElasticBehavior {
         }
     }
 
-    import std.datetime.stopwatch : StopWatch;
-    StopWatch sw;
-
     void step(StageModel stage) {
         import std.algorithm : map, minElement, maxElement, min, max;
         import std.array : array;
@@ -186,59 +196,76 @@ class ElasticBehavior {
         const baloonForce = this.calcBaloonForce(g);
         this.contactNormal.nullify();
 
-        player._radius = player.particleList
-            .map!(p => player.ends.array.map!(e => length(e - p.position)).minElement).maxElement;
-        
-        Array!ModelPolygon polygonList;
-        stage.polygonSet.detect!(ModelPolygon, Player)(player,
-            (ModelPolygon polygon, Player, CapsulePolygonResult result) {
-            polygonList ~= polygon;
-        });
-
-        sw.reset();
-
         foreach (particle; player.particleList) {
             particle.force += particle.normal * baloonForce;
             if (this.contactNormal.isNull) particle.force.y -= GRAVITY * MASS;
 
             particle.velocity += particle.force * FORCE_COEF;
             particle.velocity = min(MAX_VELOCITY, particle.velocity.length) * particle.velocity.safeNormalize;
-
-            particle.position += particle.velocity * TIME_STEP;
-            particle._ends[0] = particle.position;
+            particle._ends[0] = particle._ends[1];
+            particle._ends[1] = particle.position;
         }
+
+        player._radius = player.particleList
+            .map!(p => player.ends.array.map!(e => length(e - p.position)).minElement).maxElement;
+        
+        Array!ModelPolygon polygonList;
+        stage.polygonSet.detect!(ModelPolygon, Player)(player,
+            (ModelPolygon polygon, Player, CapsulePolygonResult) {
+            polygonList ~= polygon;
+        });
 
         calcBroad(polygonList);
 
-        int c;
-        foreach (i; 0..detector.sizeA * detector.sizeB) {
-            c += detector.result.data[i];
-        }
-        with (Log()) {
-            writeln("sizeA = ", detector.sizeA);
-            writeln("sizeB = ", detector.sizeB);
-            writeln("c = ", c);
-            writeln("colCount = ", colCount);
-        }
-        colCount = 0;
-
+        Array!ContactPair contactList;
         foreach (i, ref particle; player.particleList) {
             int cnt;
             foreach (polygon; polygonList) {
                 if (detector.result.data[i + cnt * detector.sizeA] == 1) {
-                    collision(particle, polygon);
+                    if (collision(particle, polygon)) {
+                        contactList ~= ContactPair(particle, polygon);
+                    }
                 }
                 cnt++;
             }
-
-            particle.force = vec3(0);
-            particle._ends[1] = particle.position;
         }
 
+        // 本当はこれでGPGPUしたいが、lockのしかたがわからないのでやめとく
+        //solveContact(contactList);
+
+        foreach (i; 0..10) { // 本当は全員が条件を満たすまでwhile(true)が良いが、たまに固まるのでやめとく
+        //while (true) {
+            foreach (contact; contactList) {
+                contact.solve();
+            }
+            //bool finished = true;
+            //foreach (contact; contactList) {
+            //    finished &= contact.solved();
+            //}
+            //if (finished) break;
+        }
+
+        //拘束を解消する過程で、次のフレームで衝突するであろうポリゴンが変わる
+        //そっちは見ていないので、そちらの拘束はわからない -> 死ぬ
+        //各粒子が拘束を解消するポリゴンをどう決定するべきか
+        //例えば、粒子の最大速度を決定しておくと小領域にできる -> 遅くなる
+        //やっぱり衝突前に解消するのは無理？
+        //めり込みを許容し、すりぬけないことを目的にする
+        //つまり、次のフレームでdepth > 0になることを気にしないことにする
+        //現在+次のフレームを衝突形状にするのではなく、
+        //現在+過去のフレームを衝突形状にするとする。
+        //現在めりこみが生じているとき、めりこみが改善する方向にしか速度を与えないことにする
+
         const contactCount = this.calcContactCount(polygonList);
+
+        foreach (particle; player.particleList) {
+            particle.position += particle.velocity * TIME_STEP;
+            particle.force = vec3(0);
+        }
+
         this.force.y = 0;
         foreach (p; player.particleList) {
-            p.force = this.force * (0.1 + contactCount);
+            p.force = this.force * (contactCount > 0 ? 2 : 0.1);
         }
         this.force = vec3(0);
 
@@ -258,7 +285,7 @@ class ElasticBehavior {
         const angle = rad(dif.length / radius);
         const rot = quat.axisAngle(axis, angle);
         foreach (p; player.particleList) {
-            p.position = rot.rotate(p.position-center) + center;
+            //p.position = rot.rotate(p.position-center) + center; //こういうことをすると壁抜けしちゃう
             p.normal = rot.rotate(p.normal);
         }
     }
@@ -289,6 +316,7 @@ class ElasticBehavior {
             result.fetch();
         }
 
+        // デバッグ用CPUバージョン
         /*
         with (detector) {
             sizeA = cast(int)player.particleList.length;
@@ -331,30 +359,20 @@ class ElasticBehavior {
         return BALOON_COEF * area / (volume * player.particleList.length);
     }
 
-    int colCount;
-    private void collision(Player.Particle particle, ModelPolygon polygon) {
+    private bool collision(Player.Particle particle, ModelPolygon polygon) {
         const colInfo = detect(polygon, particle);
-        if (colInfo.isNull) return;
-        colCount++;
-        sw.start();
-
+        if (colInfo.isNull) return false;
         const n = -normalize(cross(polygon.vertices[0] - polygon.vertices[1], polygon.vertices[1] - polygon.vertices[2]));
-        const depth = dot(n, polygon.vertices[0] - particle.position);
-
-        if (depth < 1e-5) return;
 
         const po = particle.velocity - dot(particle.velocity, n) * n;
         particle.velocity -= po * FRICTION;
         if (this.contactNormal.isNull) this.contactNormal = normalize(n);
         else this.contactNormal += normalize(n);
 
-        if (dot(particle.velocity, n) < 0) {
-            particle.velocity -= n * dot(n, particle.velocity) * 1.2;
-        }
-        particle.position += n * (depth + 0.4);
         if (this.contactNormal.isNull is false)
             this.contactNormal = normalize(this.contactNormal);
-        sw.stop();
+
+        return true;
     }
 
     private size_t calcContactCount(ref Array!ModelPolygon polygonList) {
@@ -447,6 +465,86 @@ class ElasticBehavior {
             this.p1.velocity += dv;
         }
     }
+
+    struct ContactPair {
+        Player.Particle particle;
+        ModelPolygon polygon;
+        vec3 normal;
+        float targetVel;
+
+        enum AcceptableDepth = 0.1;
+
+        this(Player.Particle particle, ModelPolygon polygon) {
+            this.particle = particle;
+            this.polygon = polygon;
+            normal = -normalize(cross(polygon.vertices[0] - polygon.vertices[1], polygon.vertices[1] - polygon.vertices[2]));
+
+            //import std.algorithm : max;
+            //const depth = dot(normal, polygon.vertices[0] - particle.position) + particle.radius;
+            //targetVel = max(-dot(normal, particle.velocity) * 0.2, depth / TIME_STEP * 0.5); //振動しがち
+            //targetVel = (depth-AcceptableDepth) / TIME_STEP * 0.5; //振動しがち
+            //targetVel = -dot(normal, particle.velocity) * 0.2; //振動しがち
+            //targetVel = 0; //重くなりがち
+            targetVel = 1e-3;
+        }
+
+        void solve() {
+            const depth = dot(normal, polygon.vertices[0] - particle.position) + particle.radius;
+            if (depth > AcceptableDepth) {
+                particle.position += normal * (depth-AcceptableDepth);
+            }
+            if (dot(particle.velocity, normal) < targetVel)
+                particle.velocity += normal * (targetVel - dot(normal, particle.velocity));
+        }
+
+        bool solved() {
+            const depth = dot(normal, polygon.vertices[0] - particle.position) + particle.radius;
+            return depth < AcceptableDepth + 1e-2 && dot(particle.velocity, normal) >= targetVel - 1e-3;
+        }
+    }
+
+    // CPU実装と挙動が違ってしまう。
+    // 多分同じparticleの計算を排他制御していないことが問題。
+    // やり方がわからないため、とりあえず放置。
+    private deprecated void solveContact(Array!ContactPair contactPairList) {
+        with (contactSolver) {
+            particlePositions.data.allocate(player.particleList.length);
+            particleVelocities.data.allocate(player.particleList.length);
+            int idx;
+            foreach (contactPair; contactPairList) {
+                polygonPositions.data[idx] = contactPair.polygon.vertices[0];
+                polygonNormals.data[idx] = contactPair.normal;
+                targetVelocities.data[idx] = contactPair.targetVel;
+                particleIndices.data[idx] = cast(int)contactPair.particle.index;
+                idx++;
+            }
+            foreach (i, particle; player.particleList) {
+                particlePositions.data[i] = particle.position;
+                particleVelocities.data[i] = particle.velocity;
+                radius = particle.radius;
+            }
+            acceptableDepth = ContactPair.AcceptableDepth;
+
+            polygonPositions.send();
+            polygonNormals.send();
+            targetVelocities.send();
+            particleIndices.send();
+            particlePositions.send();
+            particleVelocities.send();
+
+            foreach (i; 0..10) {
+                compute([cast(int)contactPairList.length, 1, 1]);
+            }
+
+            particlePositions.fetch();
+            particleVelocities.fetch();
+
+            foreach (i, particle; player.particleList) {
+                particle.position = particlePositions.data[i];
+                particle.velocity = particleVelocities.data[i];
+            }
+        }
+    }
 }
 
 class AABBCollisionDetection : Compute {
@@ -496,6 +594,61 @@ class AABBCollisionDetection : Compute {
             if (s0 * s1 >= 0 && min(abs(s0), abs(s1)) > radius) r = 0;
 
             result.data[gl_GlobalInvocationID.x] = r;
+        }
+    };
+}
+
+// cf. solveContact
+deprecated class ContactSolver : Compute {
+
+    mixin ComputeShaderSource!q{
+        #version 450
+
+        layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+        uniform float acceptableDepth;
+        uniform float radius;
+
+        layout(std430,binding=0) readonly buffer PolygonPosition {
+            vec3 data[];
+        } polygonPositions;
+
+        layout(std430,binding=1) readonly buffer PolygonNormals {
+            vec3 data[];
+        } polygonNormals;
+
+        layout(std430,binding=2) readonly buffer TargetVelocity {
+            float data[];
+        } targetVelocities;
+
+        layout(std430,binding=3) readonly buffer ParticleIndex {
+            int data[];
+        } particleIndices;
+
+        layout(std430,binding=4) buffer ParticlePosition {
+            vec3 data[];
+        } particlePositions;
+
+        layout(std430,binding=5) buffer ParticleVelocity {
+            vec3 data[];
+        } particleVelocities;
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            int particleIndex = particleIndices.data[idx];
+            vec3 polygonP = polygonPositions.data[idx];
+            vec3 normal = polygonNormals.data[idx];
+            vec3 particleP = particlePositions.data[particleIndex];
+            vec3 particleV = particleVelocities.data[particleIndex];
+            float targetV = targetVelocities.data[idx];
+
+            float depth = dot(normal, polygonP - particleP) + radius;
+            if (depth > acceptableDepth) {
+                particlePositions.data[particleIndex] += normal * (depth-acceptableDepth);
+            }
+            if (dot(particleV, normal) < targetV) {
+                particleVelocities.data[particleIndex] += normal * (targetV - dot(normal, particleV));
+            }
         }
     };
 }

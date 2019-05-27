@@ -175,12 +175,18 @@ class Player : Entity, CollisionCapsule {
         Particle[] next;
         vec3[2] _ends;
         vec3 beforePos;
+        float timeOfImpact;
+        vec3 contactNormal;
+        size_t index;
 
         mixin ImplAABB;
 
         this(vec3 p) {
+            static size_t idx;
+            this.index = idx++;
             this.position = p;
             this.beforePos = p;
+            this.index = index;
             this.normal = normalize(p);
             this.velocity = vec3(0);
             this.force = vec3(0,0,0);
@@ -188,7 +194,7 @@ class Player : Entity, CollisionCapsule {
         }
 
         override float radius() {
-            return 0.0001;
+            return 0.1;
         }
 
         override vec3[2] ends() {

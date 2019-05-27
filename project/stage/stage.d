@@ -17,22 +17,24 @@ void entryPoint(Project proj, EventContext context) {
     auto canvas = proj.get!Canvas("canvas");
 
     with (context()) {
-        auto model = StageModel.load("resource/castle.blend", PostProcessFlag.Triangulate);
-        proj["stage"] = model;
-
-        import std.stdio : writeln;
-        writeln(model.scene);
+        auto modelForRender = StageModel.load("resource/castle.blend", PostProcessFlag.Triangulate);
+        auto modelForCollision = StageModel.load("resource/castle.blend", PostProcessFlag.Triangulate);
+        proj["stage"] = modelForCollision;
 
         with (AABBSet.Builder()) {
-            foreach (polygon; model.polygons) {
+            foreach (polygon; modelForCollision.polygons) {
                 add(polygon);
             }
-            model.polygonSet = build();
+            modelForCollision.polygonSet = build();
         }
         
         when(Frame).then({
             with (canvas.getContext()) {
-                camera.capture(model);
+                import sbylib.wrapper.gl : GlFunction, Capability, FaceMode;
+                GlFunction().enable(Capability.CullFace);
+                GlFunction().cullFace(FaceMode.Front);
+                camera.capture(modelForRender);
+                GlFunction().disable(Capability.CullFace);
             }
         });
     }
@@ -66,6 +68,7 @@ class StageMaterial : Material {
         layout (triangle_strip, max_vertices = 3) out;
         //layout (line_strip, max_vertices=6) out;
 
+        out vec3 viewPosition;
         out vec3 worldNormal;
 
         uniform mat4 viewMatrix;
@@ -77,6 +80,7 @@ class StageMaterial : Material {
                         gl_in[1].gl_Position.xyz - gl_in[2].gl_Position.xyz));
             for (int i = 0; i < 3; i++) {
                 gl_Position = projectionMatrix * viewMatrix * gl_in[(i+0)%3].gl_Position; 
+                viewPosition = (viewMatrix * gl_in[(i+0)%3].gl_Position).xyz;
                 worldNormal = normal;
                 EmitVertex();
                 //gl_Position = projectionMatrix * viewMatrix * gl_in[(i+1)%3].gl_Position; 
@@ -91,11 +95,15 @@ class StageMaterial : Material {
     mixin FragmentShaderSource!q{
         #version 450
 
+        in vec3 viewPosition;
         in vec3 worldNormal;
         out vec4 fragColor;
 
         void main() {
-            fragColor = vec4(normalize(worldNormal) * .5 + .5, 1);
+            float dist = length(viewPosition) / 200;
+            vec3 color = normalize(worldNormal) * .5 + .5;
+            vec3 result = mix(vec3(1), color, exp(-dist));
+            fragColor = vec4(result, 1);
         }
     };
 }
@@ -105,6 +113,9 @@ ModelPolygon[] polygons(Model model) {
 }
 
 ModelPolygon[] polygons(Node node, Scene scene, mat4 frameMatrix) {
+    if (node.name == "table") return null;
+    if (node.name == "shelf") return null;
+
     frameMatrix = node.transformation * frameMatrix;
     ModelPolygon[] result;
     foreach (mesh; node.meshes) result ~= scene.meshes[mesh].polygons(scene, frameMatrix);

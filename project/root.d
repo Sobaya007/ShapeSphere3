@@ -55,6 +55,7 @@ private void setupCanvas(Project proj) {
     auto videoMode = Screen.getPrimaryScreen().currentVideoMode;
     with (CanvasBuilder()) {
         color.enable = true;
+        color.clear = Color.White;
         depth.enable = true;
         size = [videoMode.width.pixel/2, videoMode.height.pixel-200.pixel];
         proj["canvas"] = build(window);
