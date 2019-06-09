@@ -4,11 +4,6 @@ import sbylib.graphics;
 import sbylib.editor;
 import sbylib.collision;
 
-mixin(Register!(entryPoint));
-
-void entryPoint(Project proj, EventContext context) {
-}
-
 /*
 class NeedleMaterial {
 

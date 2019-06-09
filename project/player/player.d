@@ -4,25 +4,28 @@ import sbylib.graphics;
 import sbylib.editor;
 import sbylib.collision;
 import sbylib.wrapper.glfw;
+import project.player.elastic;
+import project.player.needle;
+import project.camera.chase;
 
-mixin(Register!(entryPoint));
-
-void entryPoint(Project proj, EventContext context) {
+void setupPlayer(Project proj, EventContext context) {
     auto camera = proj.get!Camera("camera");
     auto canvas = proj.get!Canvas("canvas");
+    assert(camera);
+    assert(canvas);
 
     auto player = new Player();
     proj["player"] = player;
-    with (context()) {
-        when(Frame).then({
-            with (canvas.getContext()) {
-                camera.capture(player);
-            }
-        });
-    }
+    proj["renderPlayer"] = {
+        with (canvas.getContext()) {
+            camera.capture(player);
+        }
+    };
 
     auto cameraControl = proj.get!CameraControl("cameraControl");
     auto consoleControl = proj.get!ConsoleControl("consoleControl");
+    assert(cameraControl);
+    assert(consoleControl);
 
     with (cameraControl()) {
         when((Ctrl + KeyButton.KeyP).pressed).then({
@@ -54,6 +57,14 @@ void entryPoint(Project proj, EventContext context) {
     }
 
     player.bind();
+
+    setupElastic(proj);
+    setupNeedle(proj);
+    setupChase(proj);
+
+    auto elastic = proj.get!(ElasticBehavior)("elastic");
+    assert(elastic);
+    elastic.bind();
 }
 
 class Player : Entity, CollisionCapsule {
@@ -194,7 +205,7 @@ class Player : Entity, CollisionCapsule {
         }
 
         override float radius() {
-            return 0.1;
+            return 0.001;
         }
 
         override vec3[2] ends() {

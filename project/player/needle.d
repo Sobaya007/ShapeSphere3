@@ -6,81 +6,75 @@ import sbylib.collision;
 import sbylib.wrapper.glfw;
 import root;
 import project.player.player;
-import project.stage.stage;
+import project.stage.collision;
 import std.container : Array;
 import std.conv;
 import std.datetime.stopwatch : StopWatch;
 import std.typecons : Nullable;
 
-mixin(Register!(entryPoint));
+void setupNeedle(Project proj) {
+    auto camera = proj.get!Camera("camera");
+    auto player = proj.get!Player("player");
+    assert(camera);
+    assert(player);
 
-void entryPoint(Project proj, EventContext context) {
-    bool finished;
-    when(Frame).then({
-        auto camera = proj.get!Camera("camera");
-        auto player = proj.get!Player("player");
+    auto context = new EventContext;
+    auto needle = new NeedleBehavior(player, context);
 
-        if (camera is null) return;
-        if (player is null) return;
+    proj["needle"] = needle;
 
-        auto needle = new NeedleBehavior(player, context);
+    with (context()) {
 
-        proj["needle"] = needle;
+        with (player()) {
+            StopWatch sw;
+            sw.start();
 
-        with (context()) {
-
-            with (player()) {
-                StopWatch sw;
-                sw.start();
-
-                when(Frame).then({
-                    if (auto stage = proj.get!StageModel("stage")) {
-                        needle.step(stage);
-                        Window.getCurrentWindow().title = sw.peek.to!string;
-                        sw.reset();
-                    }
-                });
-
-                enum Forward = KeyButton.Up;
-                enum Backward = KeyButton.Down;
-                enum Left = KeyButton.Left;
-                enum Right = KeyButton.Right;
-                enum Needle = KeyButton.KeyX;
-
-                when(Needle.pressing).then({
-                    player.needleCount += 0.08;
-                    if (player.needleCount > 1) player.needleCount = 1;
-                });
-                when(Needle.releasing).then({ 
-                    if (player.needleCount == 0) {
-                        import project.player.elastic : ElasticBehavior;
-                        if (auto elastic = proj.get!ElasticBehavior("elastic")) {
-                            elastic.bind();
-                            needle.unbind();
-                            foreach (particle; player.particleList) {
-                                particle.velocity = needle.calcVelocity(particle.position);
-                            }
-                        }
-                        return;
-                    }
-                    player.needleCount -= 0.05;
-                    if (player.needleCount < 0) player.needleCount = 0;
-                });
-
-                void move(vec2 v) {
-                    const n = needle.contactNormal.get(vec3(0,1,0));
-                    needle.lVel += mat3.rotFromTo(vec3(0,1,0), n) * camera.rot * vec3(v.x, 0, v.y) * 0.8;
+            when(Frame).then({
+                if (auto stage = proj.get!StageModel("stage")) {
+                    needle.step(stage);
+                    Window.getCurrentWindow().title = sw.peek.to!string;
+                    sw.reset();
                 }
+            });
 
-                when(Forward.pressing).then({ move(vec2(0,-1)); });
-                when(Backward.pressing).then({ move(vec2(0,+1)); });
-                when(Left.pressing).then({ move(vec2(-1,0)); });
-                when(Right.pressing).then({ move(vec2(+1,0)); });
+            enum Forward = KeyButton.Up;
+            enum Backward = KeyButton.Down;
+            enum Left = KeyButton.Left;
+            enum Right = KeyButton.Right;
+            enum Needle = KeyButton.KeyX;
+
+            when(Needle.pressing).then({
+                player.needleCount += 0.08;
+                if (player.needleCount > 1) player.needleCount = 1;
+            });
+            when(Needle.releasing).then({ 
+                if (player.needleCount == 0) {
+                    import project.player.elastic : ElasticBehavior;
+                    if (auto elastic = proj.get!ElasticBehavior("elastic")) {
+                        elastic.bind();
+                        needle.unbind();
+                        foreach (particle; player.particleList) {
+                            particle.velocity = needle.calcVelocity(particle.position);
+                        }
+                    }
+                    return;
+                }
+                player.needleCount -= 0.05;
+                if (player.needleCount < 0) player.needleCount = 0;
+            });
+
+            void move(vec2 v) {
+                const n = needle.contactNormal.get(vec3(0,1,0));
+                needle.lVel += mat3.rotFromTo(vec3(0,1,0), n) * camera.rot * vec3(v.x, 0, v.y) * 0.8;
             }
+
+            when(Forward.pressing).then({ move(vec2(0,-1)); });
+            when(Backward.pressing).then({ move(vec2(0,+1)); });
+            when(Left.pressing).then({ move(vec2(-1,0)); });
+            when(Right.pressing).then({ move(vec2(+1,0)); });
         }
-        finished = true;
-        context.unbind();
-    }).until(() => finished);
+    }
+    context.unbind();
 }
 
 class NeedleBehavior {

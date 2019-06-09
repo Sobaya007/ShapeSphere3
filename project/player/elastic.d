@@ -7,81 +7,73 @@ import sbylib.wrapper.glfw;
 import sbylib.wrapper.gl;
 import root;
 import project.player.player;
-import project.stage.stage;
+import project.stage.collision;
+import project.npc.npc;
 import std.container : Array;
 import std.conv;
 import std.datetime.stopwatch : StopWatch;
 
-mixin(Register!(entryPoint));
+void setupElastic(Project proj) {
 
-void entryPoint(Project proj, EventContext context) {
+    auto camera = proj.get!Camera("camera");
+    auto player = proj.get!Player("player");
+    assert(camera);
+    assert(player);
 
-    bool finished;
-    when(Frame).then({
-        auto camera = proj.get!Camera("camera");
-        auto player = proj.get!Player("player");
+    auto context = new EventContext;
+    auto elastic = new ElasticBehavior(player, context);
+    proj["elastic"] = elastic;
 
-        if (camera is null) return;
-        if (player is null) return;
+    with (context()) {
+        StopWatch sw;
+        sw.start();
 
-        auto elastic = new ElasticBehavior(player, context);
-        proj["elastic"] = elastic;
-
-        with (context()) {
-
-            with (player()) {
-                StopWatch sw;
-                sw.start();
-
-                when(Frame).then({
-                    if (auto stage = proj.get!StageModel("stage")) {
-                        elastic.step(stage);
-                        Window.getCurrentWindow().title = sw.peek.to!string;
-                        sw.reset();
-                    }
-                });
-
-                enum Down = KeyButton.Space;
-                enum Forward = KeyButton.Up;
-                enum Backward = KeyButton.Down;
-                enum Left = KeyButton.Left;
-                enum Right = KeyButton.Right;
-                enum Needle = KeyButton.KeyX;
-                enum DOWN_PUSH_FORCE = 600;
-                enum DOWN_PUSH_FORE_MIN = 800;
-                float pushCount = 0;
-
-                when(Down.pressing).then({
-                    pushCount += 0.1;
-                    elastic.push(vec3(0,-1,0) * DOWN_PUSH_FORCE * pushCount, DOWN_PUSH_FORE_MIN);
-
-                    if (pushCount > 1) pushCount = 1;
-                });
-                when(Down.released).then({ pushCount = 0; });
-
-                void move(vec2 v) {
-                    const n = elastic.contactNormal.get(vec3(0,1,0));
-                    elastic.force += mat3.rotFromTo(vec3(0,1,0), n) * camera.rot * vec3(v.x, 0, v.y) * 10;
-                }
-                when(Forward.pressing).then({ move(vec2(0,-1)); });
-                when(Backward.pressing).then({ move(vec2(0,+1)); });
-                when(Left.pressing).then({ move(vec2(-1,0)); });
-                when(Right.pressing).then({ move(vec2(+1,0)); });
-                when(Needle.pressing).then({ 
-                    import project.player.needle : NeedleBehavior;
-                    if (auto needle = proj.get!NeedleBehavior("needle")) {
-                        elastic.unbind();
-                        needle.bind();
-                    }
-                });
-
-                when(context.bound).then({
-                    pushCount = 0;
-                });
+        when(Frame).then({
+            if (auto stage = proj.get!StageModel("stage")) {
+                elastic.step(stage);
+                Window.getCurrentWindow().title = sw.peek.to!string;
+                sw.reset();
             }
+        });
+
+        enum Down = KeyButton.Space;
+        enum Forward = KeyButton.Up;
+        enum Backward = KeyButton.Down;
+        enum Left = KeyButton.Left;
+        enum Right = KeyButton.Right;
+        enum Needle = KeyButton.KeyX;
+        enum DOWN_PUSH_FORCE = 600;
+        enum DOWN_PUSH_FORE_MIN = 800;
+        float pushCount = 0;
+
+        when(Down.pressing).then({
+            pushCount += 0.1;
+            elastic.push(vec3(0,-1,0) * DOWN_PUSH_FORCE * pushCount, DOWN_PUSH_FORE_MIN);
+
+            if (pushCount > 1) pushCount = 1;
+        });
+        when(Down.released).then({ pushCount = 0; });
+
+        void move(vec2 v) {
+            const n = elastic.contactNormal.get(vec3(0,1,0));
+            elastic.force += mat3.rotFromTo(vec3(0,1,0), n) * camera.rot * vec3(v.x, 0, v.y) * 10;
         }
-        finished = true;
-    }).until(() => finished);
+        when(Forward.pressing).then({ move(vec2(0,-1)); });
+        when(Backward.pressing).then({ move(vec2(0,+1)); });
+        when(Left.pressing).then({ move(vec2(-1,0)); });
+        when(Right.pressing).then({ move(vec2(+1,0)); });
+        when(Needle.pressing).then({ 
+            import project.player.needle : NeedleBehavior;
+            if (auto needle = proj.get!NeedleBehavior("needle")) {
+                elastic.unbind();
+                needle.bind();
+            }
+        });
+
+        when(context.bound).then({
+            pushCount = 0;
+        });
+    }
 }
 
 class ElasticBehavior {
@@ -214,6 +206,11 @@ class ElasticBehavior {
             (ModelPolygon polygon, Player, CapsulePolygonResult) {
             polygonList ~= polygon;
         });
+        Array!NPC npcList; 
+        stage.polygonSet.detect!(NPC, Player)(player,
+            (NPC npc, Player, CapsuleSphereResult) {
+            npcList ~= npc;
+        });
 
         calcBroad(polygonList);
 
@@ -227,6 +224,11 @@ class ElasticBehavior {
                     }
                 }
                 cnt++;
+            }
+            foreach (npc; npcList) {
+                if (collision(particle, npc)) {
+                    contactList ~= ContactPair(particle, npc);
+                }
             }
         }
 
@@ -375,6 +377,12 @@ class ElasticBehavior {
         return true;
     }
 
+    private bool collision(Player.Particle particle, NPC npc) {
+        const colInfo = detect(npc, particle);
+        if (colInfo.isNull) return false;
+        return true;
+    }
+
     private size_t calcContactCount(ref Array!ModelPolygon polygonList) {
         import std.algorithm : map, filter, min, sort;
         import std.array : array;
@@ -411,7 +419,7 @@ class ElasticBehavior {
         }
         foreach (i,ref v; vs) {
             auto p = player.particleList[i];
-            v.position = p.position;
+            v.position = (p.ends[0] + p.ends[1]) / 2; // for hide oscillation
             v.normal = safeNormalize(p.normal);
         }
         player.geom.update();
@@ -468,28 +476,45 @@ class ElasticBehavior {
 
     struct ContactPair {
         Player.Particle particle;
-        ModelPolygon polygon;
+        vec3 pos;
         vec3 normal;
         float targetVel;
 
-        enum AcceptableDepth = 0.1;
+        enum AcceptableDepth = 0.0001;
 
         this(Player.Particle particle, ModelPolygon polygon) {
             this.particle = particle;
-            this.polygon = polygon;
+            pos = polygon.vertices[0];
             normal = -normalize(cross(polygon.vertices[0] - polygon.vertices[1], polygon.vertices[1] - polygon.vertices[2]));
 
-            //import std.algorithm : max;
-            //const depth = dot(normal, polygon.vertices[0] - particle.position) + particle.radius;
+            import std.algorithm : max;
+            const depth = dot(normal, polygon.vertices[0] - particle.position) + particle.radius;
             //targetVel = max(-dot(normal, particle.velocity) * 0.2, depth / TIME_STEP * 0.5); //振動しがち
-            //targetVel = (depth-AcceptableDepth) / TIME_STEP * 0.5; //振動しがち
-            //targetVel = -dot(normal, particle.velocity) * 0.2; //振動しがち
+            //targetVel = (depth-AcceptableDepth) / TIME_STEP * 0.1; //振動しがち
+            targetVel = max(0,-dot(normal, particle.velocity) * 0.2); //振動しがち
             //targetVel = 0; //重くなりがち
-            targetVel = 1e-3;
+            //targetVel = 1e-3;
+        }
+
+        this(Player.Particle particle, CollisionSphere sphere) {
+            import std : min, max;
+            this.particle = particle;
+            //(v, s + tv - p) = 0
+            // t|v|^2 + (s-p,v) = 0
+            pos = sphere.center;
+            normal = normalize(particle.position - pos);
+
+            import std.algorithm : max;
+            const depth = dot(normal, pos - particle.position) + particle.radius;
+            //targetVel = max(-dot(normal, particle.velocity) * 0.2, depth / TIME_STEP * 0.5); //振動しがち
+            //targetVel = (depth-AcceptableDepth) / TIME_STEP * 0.1; //振動しがち
+            targetVel = max(0,-dot(normal, particle.velocity) * 0.2); //振動しがち
+            //targetVel = 0; //重くなりがち
+            //targetVel = 1e-3;
         }
 
         void solve() {
-            const depth = dot(normal, polygon.vertices[0] - particle.position) + particle.radius;
+            const depth = dot(normal, pos - particle.position) + particle.radius;
             if (depth > AcceptableDepth) {
                 particle.position += normal * (depth-AcceptableDepth);
             }
@@ -498,7 +523,7 @@ class ElasticBehavior {
         }
 
         bool solved() {
-            const depth = dot(normal, polygon.vertices[0] - particle.position) + particle.radius;
+            const depth = dot(normal, pos - particle.position) + particle.radius;
             return depth < AcceptableDepth + 1e-2 && dot(particle.velocity, normal) >= targetVel - 1e-3;
         }
     }
@@ -507,43 +532,43 @@ class ElasticBehavior {
     // 多分同じparticleの計算を排他制御していないことが問題。
     // やり方がわからないため、とりあえず放置。
     private deprecated void solveContact(Array!ContactPair contactPairList) {
-        with (contactSolver) {
-            particlePositions.data.allocate(player.particleList.length);
-            particleVelocities.data.allocate(player.particleList.length);
-            int idx;
-            foreach (contactPair; contactPairList) {
-                polygonPositions.data[idx] = contactPair.polygon.vertices[0];
-                polygonNormals.data[idx] = contactPair.normal;
-                targetVelocities.data[idx] = contactPair.targetVel;
-                particleIndices.data[idx] = cast(int)contactPair.particle.index;
-                idx++;
-            }
-            foreach (i, particle; player.particleList) {
-                particlePositions.data[i] = particle.position;
-                particleVelocities.data[i] = particle.velocity;
-                radius = particle.radius;
-            }
-            acceptableDepth = ContactPair.AcceptableDepth;
+        //with (contactSolver) {
+        //    particlePositions.data.allocate(player.particleList.length);
+        //    particleVelocities.data.allocate(player.particleList.length);
+        //    int idx;
+        //    foreach (contactPair; contactPairList) {
+        //        polygonPositions.data[idx] = contactPair.polygon.vertices[0];
+        //        polygonNormals.data[idx] = contactPair.normal;
+        //        targetVelocities.data[idx] = contactPair.targetVel;
+        //        particleIndices.data[idx] = cast(int)contactPair.particle.index;
+        //        idx++;
+        //    }
+        //    foreach (i, particle; player.particleList) {
+        //        particlePositions.data[i] = particle.position;
+        //        particleVelocities.data[i] = particle.velocity;
+        //        radius = particle.radius;
+        //    }
+        //    acceptableDepth = ContactPair.AcceptableDepth;
 
-            polygonPositions.send();
-            polygonNormals.send();
-            targetVelocities.send();
-            particleIndices.send();
-            particlePositions.send();
-            particleVelocities.send();
+        //    polygonPositions.send();
+        //    polygonNormals.send();
+        //    targetVelocities.send();
+        //    particleIndices.send();
+        //    particlePositions.send();
+        //    particleVelocities.send();
 
-            foreach (i; 0..10) {
-                compute([cast(int)contactPairList.length, 1, 1]);
-            }
+        //    foreach (i; 0..10) {
+        //        compute([cast(int)contactPairList.length, 1, 1]);
+        //    }
 
-            particlePositions.fetch();
-            particleVelocities.fetch();
+        //    particlePositions.fetch();
+        //    particleVelocities.fetch();
 
-            foreach (i, particle; player.particleList) {
-                particle.position = particlePositions.data[i];
-                particle.velocity = particleVelocities.data[i];
-            }
-        }
+        //    foreach (i, particle; player.particleList) {
+        //        particle.position = particlePositions.data[i];
+        //        particle.velocity = particleVelocities.data[i];
+        //    }
+        //}
     }
 }
 

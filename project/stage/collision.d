@@ -1,6 +1,6 @@
-module project.stage.stage;
+module project.stage.collision;
 
-import sbylib.wrapper.assimp : Scene, Node, Mesh, Face;
+import sbylib.wrapper.assimp : Assimp, Scene, Node, Mesh, Face;
 import sbylib.graphics;
 import sbylib.editor;
 import sbylib.collision;
@@ -8,117 +8,55 @@ import sbylib.wrapper.glfw;
 import sbylib.wrapper.assimp : PostProcessFlag;
 import root;
 import project.player.player;
+import project.npc.npc;
 
-mixin(Register!(entryPoint));
-
-void entryPoint(Project proj, EventContext context) {
-
-    auto camera = proj.get!Camera("camera");
-    auto canvas = proj.get!Canvas("canvas");
-
+void setupStageCollision(Project proj, EventContext context) {
     with (context()) {
-        auto modelForRender = StageModel.load("resource/castle.blend", PostProcessFlag.Triangulate);
-        auto modelForCollision = StageModel.load("resource/castle.blend", PostProcessFlag.Triangulate);
-        proj["stage"] = modelForCollision;
+        auto npc = proj.get!(NPC[])("NPC");
+        assert(npc);
+
+        Assimp.initialize();
+        auto scene = Scene.fromFile("resource/castle.blend", PostProcessFlag.Triangulate);
+        auto model = new StageModel();
+        proj["stage"] = model;
 
         with (AABBSet.Builder()) {
-            foreach (polygon; modelForCollision.polygons) {
+            foreach (polygon; polygons(scene.rootNode, scene, mat4.identity)) {
                 add(polygon);
             }
-            modelForCollision.polygonSet = build();
-        }
-        
-        when(Frame).then({
-            with (canvas.getContext()) {
-                import sbylib.wrapper.gl : GlFunction, Capability, FaceMode;
-                GlFunction().enable(Capability.CullFace);
-                GlFunction().cullFace(FaceMode.Front);
-                camera.capture(modelForRender);
-                GlFunction().disable(Capability.CullFace);
+            foreach (n; npc) {
+                add(n);
             }
-        });
+            model.polygonSet = build();
+        }
     }
 }
 
-class StageModel : Model {
-    mixin Material!(
-            MaterialPattern!(StageMaterial, ".*"));
-    mixin ImplLoad;
+struct Person {
+    vec3 pos;
+}
 
+Person[] findPerson(Node node) {
+    import std : canFind;
+    Person[] result;
+    if (node.name.canFind("Person")) {
+        result ~= Person(node.transformation.getTranslation.xzy);
+    }
+    foreach (child; node.children) {
+        result ~= child.findPerson();
+    }
+    return result;
+}
+
+class StageModel { 
     AABBSet polygonSet;
 }
 
-class StageMaterial : Material {
-    mixin VertexShaderSource!q{
-        #version 450
-
-        in vec3 position;
-
-        uniform mat4 frameMatrix;
-
-        void main() {
-            gl_Position = (frameMatrix * vec4(position, 1)).xzyw;
-        }
-    };
-
-    mixin GeometryShaderSource!q{
-        #version 450
-
-        layout (triangles) in;
-        layout (triangle_strip, max_vertices = 3) out;
-        //layout (line_strip, max_vertices=6) out;
-
-        out vec3 viewPosition;
-        out vec3 worldNormal;
-
-        uniform mat4 viewMatrix;
-        uniform mat4 projectionMatrix;
-
-        void main() {
-            vec3 normal = -normalize(cross(
-                        gl_in[0].gl_Position.xyz - gl_in[1].gl_Position.xyz,
-                        gl_in[1].gl_Position.xyz - gl_in[2].gl_Position.xyz));
-            for (int i = 0; i < 3; i++) {
-                gl_Position = projectionMatrix * viewMatrix * gl_in[(i+0)%3].gl_Position; 
-                viewPosition = (viewMatrix * gl_in[(i+0)%3].gl_Position).xyz;
-                worldNormal = normal;
-                EmitVertex();
-                //gl_Position = projectionMatrix * viewMatrix * gl_in[(i+1)%3].gl_Position; 
-                //worldNormal = normal;
-                //EmitVertex();
-            }
-
-            EndPrimitive();
-        }
-    };
-
-    mixin FragmentShaderSource!q{
-        #version 450
-
-        in vec3 viewPosition;
-        in vec3 worldNormal;
-        out vec4 fragColor;
-
-        void main() {
-            float dist = length(viewPosition) / 200;
-            vec3 color = normalize(worldNormal) * .5 + .5;
-            vec3 result = mix(vec3(1), color, exp(-dist));
-            fragColor = vec4(result, 1);
-        }
-    };
-}
-
-ModelPolygon[] polygons(Model model) {
-    return polygons(model.scene.rootNode, model.scene, mat4.identity);
-}
-
 ModelPolygon[] polygons(Node node, Scene scene, mat4 frameMatrix) {
-    if (node.name == "table") return null;
-    if (node.name == "shelf") return null;
-
     frameMatrix = node.transformation * frameMatrix;
     ModelPolygon[] result;
-    foreach (mesh; node.meshes) result ~= scene.meshes[mesh].polygons(scene, frameMatrix);
+    if (node.name == "Castle" || node.name == "Ground" || node.name == "House" || node.name == "Bridge")
+        foreach (mesh; node.meshes) result ~= scene.meshes[mesh].polygons(scene, frameMatrix);
     foreach (child; node.children) result ~= child.polygons(scene, frameMatrix);
     return result;
 }

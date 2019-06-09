@@ -13,12 +13,11 @@ void root(Project proj, EventContext context) {
     setupConsole(proj);
 
     auto window = proj.get!Window("window");
-    auto canvas = proj.get!Canvas("canvas");
 
     with (context()) {
         when(Frame).then({
-            with (canvas.getContext()) {
-                clear(ClearMode.Color, ClearMode.Depth);
+            if (auto renderScene = proj.get!(void delegate())("renderScene")) {
+                renderScene();
             }
         });
 
@@ -65,7 +64,7 @@ private void setupCanvas(Project proj) {
 private void setupCamera(Project proj) {
     with (PerspectiveCamera.Builder()) {
         near = 0.1;
-        far = 200;
+        far = 1000;
         fov = 60.deg;
         aspect = 1;
 

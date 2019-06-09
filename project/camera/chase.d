@@ -1,31 +1,24 @@
 module project.camera.chase;
 
+import sbylib.collision;
 import sbylib.graphics;
 import sbylib.editor;
 import sbylib.math;
 import project.player.player;
+import project.stage.collision;
+import root;
 
-mixin(Register!(entryPoint));
-
-void entryPoint(Project proj, EventContext context) {
+void setupChase(Project proj) {
     auto control = new ChaseControl(proj);
 
-    with (context()) {
-        VoidEvent e;
-        e = when(Frame).then({
-            auto camera = proj.get!Camera("camera");
-            auto player = proj.get!Player("player");
-            if (camera is null) return;
-            if (player is null) return;
-            e.kill();
-            with (player()) {
-                when(Frame).then({ control.step(); });
-                enum RotLeft = KeyButton.KeyQ;
-                enum RotRight = KeyButton.KeyE;
-                when(RotLeft.pressing).then({ control.turn(-1); });
-                when(RotRight.pressing).then({ control.turn(+1); });
-            }
-        });
+    auto player = proj.get!Player("player");
+    assert(player);
+    with (player()) {
+        when(Frame).then({ control.step(); });
+        enum RotLeft = KeyButton.KeyQ;
+        enum RotRight = KeyButton.KeyE;
+        when(RotLeft.pressing).then({ control.turn(-1); });
+        when(RotRight.pressing).then({ control.turn(+1); });
     }
 }
 
@@ -36,7 +29,7 @@ class ChaseControl {
     private float radius = 1;
     private vec3 target  = vec3(0);
     private Project proj;
-    //private CollisionRay ray = new CollisionRay;
+    private Ray ray = new Ray;
 
     private static immutable {
         float CHASE_MAX_LENGTH = 20;
@@ -73,14 +66,21 @@ class ChaseControl {
 
         const dir = vec3(xz.x*cos(phi), sin(phi), xz.y*cos(phi));
 
-        //ray.start = target;
-        //ray.dir = dir;
-        //auto colInfo = Game.getMap().mapEntity.rayCast(ray);
-        //if (colInfo.isJust) {
-        //    auto r = length(colInfo.unwrap().point - target);
-        //    this.arrivalRadius = min(r, CHASE_MAX_LENGTH);
-        //}
-        this.radius += (this.arrivalRadius - this.radius) * CHASE_RADIUS_RATE;
+        ray.start = target;
+        ray.dir = dir;
+        float intersectionRadius = arrivalRadius;
+        if (auto stage = proj.get!StageModel("stage")) {
+            stage.polygonSet.detect!(ModelPolygon, Ray)(ray,
+                (ModelPolygon polygon, Ray ray, CapsulePolygonResult) {
+                const n = normalize(cross(polygon.vertices[0] - polygon.vertices[1],
+                            polygon.vertices[1] - polygon.vertices[2]));
+                const t = -dot(ray.start - polygon.vertices[0], n) / dot(ray.dir, n);
+                const p = ray.start + t * ray.dir;
+                auto r = length(p - target);
+                intersectionRadius = min(intersectionRadius, min(r, CHASE_MAX_LENGTH));
+            });
+        }
+        this.radius += (min(this.arrivalRadius, intersectionRadius) - this.radius) * CHASE_RADIUS_RATE;
         camera.pos = target + radius * dir;
         camera.lookAt(target);
     }
@@ -89,5 +89,21 @@ class ChaseControl {
         auto c = cos(rad(CHASE_TURN_SPEED * value));
         auto s = sin(rad(CHASE_TURN_SPEED * value));
         arrivalXZ = normalize(mat2(c, -s, s, c) * arrivalXZ);
+    }
+}
+
+class Ray : CollisionCapsule {
+
+    vec3 start;
+    vec3 dir;
+
+    mixin ImplAABB;
+
+    override float radius() {
+        return 0;
+    }
+
+    override vec3[2] ends() {
+        return [start, start + dir * 20];
     }
 }
